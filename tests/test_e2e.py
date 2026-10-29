@@ -131,9 +131,9 @@ def _songformer_prereqs() -> bool:
         for name in ("muq", "torchaudio", "omegaconf", "loguru", "ema_pytorch", "x_transformers"):
             importlib.import_module(name)
 
-        from autohotcue._songformer import _MODEL_ID, _hf_revision
+        from autohotcue._songformer import _HF_REVISION, _MODEL_ID
 
-        snapshot_download(_MODEL_ID, revision=_hf_revision(), local_files_only=True)
+        snapshot_download(_MODEL_ID, revision=_HF_REVISION, local_files_only=True)
         return True
     except Exception:
         return False
@@ -226,11 +226,11 @@ def test_all_in_one_engines_on_real_track(engine: str, track_path: str):
 
 @pytest.mark.skipif(
     os.environ.get("AUTOHOTCUE_RUN_SONGFORMER_E2E") != "1",
-    reason="opt-in: set AUTOHOTCUE_RUN_SONGFORMER_E2E=1 (forward peaks ~24 GB RAM)",
+    reason="opt-in: set AUTOHOTCUE_RUN_SONGFORMER_E2E=1 (loads a 2.8 GB model)",
 )
 @pytest.mark.skipif(not _songformer_prereqs(), reason="ml-songformer prerequisites missing")
 def test_ml_songformer_analyze_real_track(monkeypatch):
-    # CPU forward is ~108 s per 6-min track; run only the first e2e track.
+    # One track is enough, this only checks the wiring.
     track_path = E2E_TRACKS[0]
     if not Path(track_path).is_file():
         pytest.skip(f"missing track: {track_path}")
@@ -272,6 +272,40 @@ def test_ml_songformer_analyze_real_track(monkeypatch):
 
     if "G" in prop.positions:
         assert _beats_after(prop.positions["G"], track.beats) >= 8
+
+
+@pytest.mark.skipif(
+    os.environ.get("AUTOHOTCUE_RUN_SONGFORMER_E2E") != "1",
+    reason="opt-in: set AUTOHOTCUE_RUN_SONGFORMER_E2E=1 (upstream forward peaks ~35 GB)",
+)
+@pytest.mark.skipif(not _songformer_prereqs(), reason="ml-songformer prerequisites missing")
+def test_songformer_forward_matches_upstream_forward():
+    import torch
+
+    from autohotcue import _songformer
+
+    track_path = E2E_TRACKS[0]
+    if not Path(track_path).is_file():
+        pytest.skip(f"missing track: {track_path}")
+    sr = _songformer._MODEL_SR
+    track = analysis.decode(track_path, sr=sr)
+    # Upstream hangs on a very short tail after a window, so trim it.
+    tail = len(track) % (420 * sr)
+    if tail <= _songformer._MIN_SAMPLES:
+        track = track[: len(track) - tail]
+    # The whole track, plus cuts around the chunk and window edges.
+    # A short track is looped to make the longer cuts.
+    looped = np.resize(track, max(len(track), 450 * sr))
+    waveforms = [track] + [looped[:n] for n in (20 * sr, 420 * sr, 421 * sr, 450 * sr)]
+
+    model = _songformer._get_model(_songformer._resolve_device())
+    with torch.inference_mode():
+        upstream = [model(w) for w in waveforms]
+        ours = [_songformer._forward(model, w) for w in waveforms]
+        # Upstream would hang on this one, so it is compared with the 420 s cut.
+        tail = _songformer._forward(model, looped[: 420 * sr + 500])
+    assert ours == upstream
+    assert tail == upstream[2]
 
 
 @pytest.mark.skipif(not library_exists, reason="real djay library not present")

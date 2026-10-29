@@ -6,14 +6,12 @@ import sys
 import numpy as np
 import pytest
 
+import autohotcue._songformer as mod
 from autohotcue import analysis
 from autohotcue._songformer import (
     SONGFORMER_LABELS,
-    _HF_REVISION,
     _MODEL_SR,
-    _apply_memory_ceiling,
     _get_model,
-    _hf_revision,
     _map_songformer_segments,
     _resolve_device,
     _stub_msaf,
@@ -136,37 +134,26 @@ def test_songformer_empty_input_returns_empty():
 
 
 def test_resolve_device_default_and_override(monkeypatch):
+    import torch
+
     monkeypatch.delenv("AUTOHOTCUE_SONGFORMER_DEVICE", raising=False)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
+    assert _resolve_device() == "mps"
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
     assert _resolve_device() == "cpu"
 
     monkeypatch.setenv("AUTOHOTCUE_SONGFORMER_DEVICE", "mps")
     assert _resolve_device() == "mps"
 
 
-def test_hf_revision_default_and_override(monkeypatch):
-    monkeypatch.delenv("AUTOHOTCUE_SONGFORMER_REVISION", raising=False)
-    assert _hf_revision() == _HF_REVISION
-
-    monkeypatch.setenv("AUTOHOTCUE_SONGFORMER_REVISION", "deadbeef")
-    assert _hf_revision() == "deadbeef"
-
-
-def test_get_model_raises_when_device_or_revision_changes(monkeypatch):
-    import autohotcue._songformer as mod
-
+def test_get_model_raises_when_device_changes(monkeypatch):
     sentinel = object()
     monkeypatch.setattr(mod, "_model", sentinel)
     monkeypatch.setattr(mod, "_model_device", "cpu")
-    monkeypatch.setattr(mod, "_model_revision", _HF_REVISION)
 
     with pytest.raises(RuntimeError, match="ml-songformer model already loaded"):
         _get_model("mps")
-
     assert _get_model("cpu") is sentinel
-
-    monkeypatch.setenv("AUTOHOTCUE_SONGFORMER_REVISION", "other-rev")
-    with pytest.raises(RuntimeError, match="ml-songformer model already loaded"):
-        _get_model("cpu")
 
 
 @pytest.fixture
@@ -188,91 +175,38 @@ def test_stub_msaf_idempotent_and_blocks_compute_results(clean_msaf_modules):
         sys.modules["msaf"].eval.compute_results()
 
 
-def test_apply_memory_ceiling_zero_is_noop(monkeypatch):
-    import resource
-
-    calls: list[tuple] = []
-
-    def fake_setrlimit(which, limits):
-        calls.append((which, limits))
-
-    monkeypatch.setattr(resource, "setrlimit", fake_setrlimit)
-    monkeypatch.setenv("AUTOHOTCUE_SONGFORMER_MEM_GB", "0")
-    _apply_memory_ceiling()
-    assert calls == []
+_TWO_SECONDS = BeatAnalysis(
+    bpm=120.0,
+    beats=np.linspace(0.0, 2.0, 5),
+    downbeats=np.array([0.0, 1.0, 2.0]),
+    duration_s=2.0,
+    source="test",
+)
 
 
-def test_apply_memory_ceiling_huge_value_does_not_raise(monkeypatch):
-    import resource
-
-    calls: list[tuple] = []
-
-    def fake_setrlimit(which, limits):
-        calls.append((which, limits))
-
-    def fake_getrlimit(which):
-        return (resource.RLIM_INFINITY, resource.RLIM_INFINITY)
-
-    monkeypatch.setattr(resource, "getrlimit", fake_getrlimit)
-    monkeypatch.setattr(resource, "setrlimit", fake_setrlimit)
-    monkeypatch.setenv("AUTOHOTCUE_SONGFORMER_MEM_GB", "9999")
-    _apply_memory_ceiling()
-    assert len(calls) == 1
-    which, (soft, hard) = calls[0]
-    assert which == resource.RLIMIT_DATA
-    assert soft == hard == int(9999 * 1024**3)
+_MODEL = object()
 
 
-def test_segment_structure_songformer_memory_error_translation(monkeypatch):
-    import autohotcue._songformer as mod
-
-    class FakeModel:
-        def __call__(self, waveform):
-            raise MemoryError("out of memory")
-
-    monkeypatch.setattr(mod, "_get_model", lambda _device: FakeModel())
-
-    rng = np.random.default_rng(0)
-    y = rng.standard_normal(44100 * 2).astype(np.float32)
-    beat = BeatAnalysis(
-        bpm=120.0,
-        beats=np.linspace(0.0, 2.0, 5),
-        downbeats=np.array([0.0, 1.0, 2.0]),
-        duration_s=2.0,
-        source="test",
-    )
-
-    with pytest.raises(RuntimeError, match="AUTOHOTCUE_SONGFORMER_MEM_GB"):
-        segment_structure_songformer("track.wav", y, 44100, beat)
+def _fake_forward(monkeypatch, forward):
+    monkeypatch.setattr(mod, "_get_model", lambda _device: _MODEL)
+    monkeypatch.setattr(mod, "_forward", forward)
 
 
 def test_segment_structure_songformer_plumbing(monkeypatch):
-    import autohotcue._songformer as mod
-
     received: dict[str, object] = {}
 
-    class FakeModel:
-        def __call__(self, waveform):
-            received["waveform"] = waveform
-            return [
-                {"label": "INTRO", "start": 0.0, "end": 1.0},
-                {"label": "silence", "start": 1.0, "end": 1.2},
-                {"label": "chorus", "start": 1.2, "end": 5.0},
-            ]
+    def forward(model, waveform):
+        assert model is _MODEL
+        received["waveform"] = waveform
+        return [
+            {"label": "INTRO", "start": 0.0, "end": 1.0},
+            {"label": "silence", "start": 1.0, "end": 1.2},
+            {"label": "chorus", "start": 1.2, "end": 5.0},
+        ]
 
-    monkeypatch.setattr(mod, "_get_model", lambda _device: FakeModel())
-
-    rng = np.random.default_rng(0)
-    y = rng.standard_normal(44100 * 2).astype(np.float32)
-    beat = BeatAnalysis(
-        bpm=120.0,
-        beats=np.linspace(0.0, 2.0, 5),
-        downbeats=np.array([0.0, 1.0, 2.0]),
-        duration_s=2.0,
-        source="test",
-    )
-
-    out = segment_structure_songformer("track.wav", y, 44100, beat)
+    _fake_forward(monkeypatch, forward)
+    y = np.random.default_rng(0).standard_normal(44100 * 2).astype(np.float32)
+    out = segment_structure_songformer("track.wav", y, 44100, _TWO_SECONDS)
 
     wf = received["waveform"]
     assert isinstance(wf, np.ndarray)
@@ -284,32 +218,79 @@ def test_segment_structure_songformer_plumbing(monkeypatch):
     assert all(0.0 <= s.energy_rank <= 1.0 for s in out.segments)
 
 
-def test_apply_memory_ceiling_nan_inf_are_noops(monkeypatch):
-    import resource
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [
+        (MemoryError("out of memory"), "SongFormer ran out of memory"),
+        (RuntimeError("invalid memory format strides mismatch"), "strides mismatch"),
+    ],
+)
+def test_segment_structure_songformer_errors(monkeypatch, error, message):
+    def forward(model, waveform):
+        assert model is _MODEL
+        raise error
 
-    calls: list[tuple] = []
-    monkeypatch.setattr(resource, "setrlimit", lambda which, limits: calls.append((which, limits)))
-    for value in ("nan", "inf", "-inf", "-5"):
-        monkeypatch.setenv("AUTOHOTCUE_SONGFORMER_MEM_GB", value)
-        _apply_memory_ceiling()
-    assert calls == []
+    _fake_forward(monkeypatch, forward)
+    y = np.zeros(44100 * 2, dtype=np.float32)
+    with pytest.raises(RuntimeError, match=message):
+        segment_structure_songformer("track.wav", y, 44100, _TWO_SECONDS)
 
 
-def test_segment_structure_songformer_non_memory_runtime_error_passes_through(monkeypatch):
-    import autohotcue._songformer as mod
+def test_sdpa_attention_matches_stock_attention():
+    w2v = pytest.importorskip("transformers.models.wav2vec2_conformer.modeling_wav2vec2_conformer")
+    import torch
 
-    class FakeModel:
-        def __call__(self, waveform):
-            raise RuntimeError("invalid memory format strides mismatch")
-
-    monkeypatch.setattr(mod, "_get_model", lambda _device: FakeModel())
-    y = np.zeros(44100, dtype=np.float32)
-    beat = BeatAnalysis(
-        bpm=120.0,
-        beats=np.linspace(0.0, 1.0, 3),
-        downbeats=np.array([0.0, 1.0]),
-        duration_s=1.0,
-        source="test",
+    torch.manual_seed(0)
+    config = w2v.Wav2Vec2ConformerConfig(
+        hidden_size=64, num_attention_heads=4, position_embeddings_type="rotary"
     )
-    with pytest.raises(RuntimeError, match="strides mismatch"):
-        segment_structure_songformer("track.wav", y, 44100, beat)
+    attn = w2v.Wav2Vec2ConformerSelfAttention(config).eval()
+    x = torch.randn(2, 300, 64)
+    positions = w2v.Wav2Vec2ConformerRotaryPositionalEmbedding(config)(x)
+    with torch.inference_mode():
+        expected = attn(x, relative_position_embeddings=positions)[0]
+        actual = mod._sdpa_attention(attn, x, relative_position_embeddings=positions)[0]
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-5)
+
+
+def _tiny_frontend():
+    """MuQ's frontend with fewer channels, which does not change how far each frame looks."""
+    import torch
+    from muq.muq.models.muq_model import MuQModel
+    from muq.muq.modules.conv import Conv2dSubsampling
+    from muq.muq.modules.features import MelSTFT
+
+    class TinyFrontend:
+        preprocessing = MuQModel.preprocessing
+        normalize = MuQModel.normalize
+
+        def __init__(self):
+            self.preprocessor_melspec_2048 = MelSTFT(n_fft=2048, hop_length=240, is_db=True)
+            self.stat = {"melspec_2048_mean": 0.0, "melspec_2048_std": 1.0}
+            self.conv = Conv2dSubsampling(1, 8, 16, strides=[2, 2], n_bands=128).eval()
+
+    torch.manual_seed(0)
+    return TinyFrontend()
+
+
+def test_tiled_frontend_and_chunk_reuse_match_single_passes(monkeypatch):
+    pytest.importorskip("muq")
+    import torch
+
+    monkeypatch.setattr(mod, "_TILE_FRAMES", 300)
+    monkeypatch.setattr(mod, "_encode", lambda enc, x: x)
+    enc = _tiny_frontend()
+    frame = mod._FRAME_SAMPLES
+    chunk = mod._CHUNK_SAMPLES
+    torch.manual_seed(1)
+    for length in (300 * frame + 239, 300 * frame + 240, 308 * frame + 1, 2 * chunk,
+                   3 * chunk + 5 * _MODEL_SR + 239):
+        audio = torch.randn(2, length) * 0.1
+        chunks = list(audio[0].split(chunk))
+        with torch.inference_mode():
+            window = mod._frontend(enc, audio)
+            reused = mod._chunk_embeddings(enc, window[:1], chunks)
+            single = mod._frontend_tile(enc, audio)
+            per_chunk = torch.cat([mod._frontend_tile(enc, c.unsqueeze(0)) for c in chunks], 1)
+        torch.testing.assert_close(window, single, rtol=1e-5, atol=1e-5)
+        torch.testing.assert_close(reused, per_chunk, rtol=1e-5, atol=1e-5)

@@ -9,7 +9,7 @@ via `cuepolicy.py`.
 ## Why SongFormer
 
 SongFormer leads HarmonixSet boundary accuracy among recent MSA models
-(HR.5F **0.703** vs All-In-One **0.596** — [arXiv:2510.02797](https://arxiv.org/abs/2510.02797)).
+(HR.5F **0.703** vs All-In-One **0.596**, [arXiv:2510.02797](https://arxiv.org/abs/2510.02797)).
 autohotcue keeps beat_this for beats/downbeats and uses SongFormer for structure labels only.
 
 ## Model
@@ -18,13 +18,13 @@ autohotcue keeps beat_this for beats/downbeats and uses SongFormer for structure
 |------|-------|
 | HuggingFace ID | `ASLP-lab/SongFormer` |
 | Pinned revision | `a75880ed1b7375ac71860ec6c4fc9c899cf99515` (2026-05-14) |
-| Override | `AUTOHOTCUE_SONGFORMER_REVISION` |
 | Loader | `transformers.AutoModel.from_pretrained(..., trust_remote_code=True)` |
 | Download | ~2.8 GB one-time into the HF cache |
-| License | CC BY 4.0 (code + weights) — attribution: SongFormer, ASLP-lab |
+| License | CC BY 4.0 (code + weights); attribution: SongFormer, ASLP-lab |
 
-The revision pin is the supply-chain mitigation; override only when deliberately
-re-validating a newer snapshot.
+The pinned revision protects against upstream changes to the remote code.
+`_forward` is written against this exact revision, so moving to a new one means checking
+it again with the parity test (see "Accuracy").
 
 ## Prerequisites
 
@@ -41,8 +41,8 @@ uv sync --extra songformer
 uv run autohotcue propose "/path/to/track.opus" --engine ml-songformer
 ```
 
-Engines: `ml` / `ml-librosa` (librosa Laplacian, default), `ml-allin1`, `ml-songformer`,
-`legacy`.
+Engines: `ml-bass` (default), `ml` / `ml-librosa`, `ml-allin1`, `ml-raveform`,
+`ml-songformer`, `legacy`.
 
 ```bash
 uv run autohotcue bench truth.json --engines ml,ml-allin1,ml-songformer,legacy
@@ -50,42 +50,98 @@ uv run autohotcue bench truth.json --engines ml,ml-allin1,ml-songformer,legacy
 
 ## Device
 
-Defaults to **CPU** (`AUTOHOTCUE_SONGFORMER_DEVICE` unset).
-`AUTOHOTCUE_SONGFORMER_DEVICE` also applies under bench/e2e runs — `analyze()`'s
-`device` flag only steers beat tracking, same as with ml-allin1.
+SongFormer runs on the Apple-Silicon GPU (MPS) when PyTorch can see one, and on the CPU
+otherwise.
 
-`AUTOHOTCUE_SONGFORMER_DEVICE=mps` is opt-in and currently **not recommended**: the
-420 s-window forward needs >17 GB on the MPS shared pool and OOMs under
-`PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.5` on a 32 GB machine. If you set both MPS
-watermarks, `PYTORCH_MPS_LOW_WATERMARK_RATIO` must be ≤ `HIGH`.
+Set `AUTOHOTCUE_SONGFORMER_DEVICE=cpu` or `mps` to pick one yourself.
+This also applies to bench and e2e runs, because the `device` flag of `analyze()` only
+affects beat tracking, as with ml-allin1.
 
-## Runtime (this machine, M2 Max 32 GB, Python 3.13.3, 2026-06-12)
+## Forward pass
 
-| Track | duration | CPU forward | full `propose` wall | peak RSS |
-|-------|----------|-------------|---------------------|----------|
-| Adam Port — Move (Extended Mix) | 352.7 s opus | 108 s | 2:19 (incl. model load + beat_this) | ~23.6 GB |
+We don't call the model's own forward pass.
+`_forward` in `_songformer.py` does the same job: same 420 s windows, same 30 s chunks,
+same averaging, and it calls the model's own post-processing at the end.
 
-`effective_parallel_jobs` forces `jobs=1` for `ml-songformer` (model singleton; analysis
-stays on the main process).
+What changes is how the work gets done:
+
+1. Attention goes through PyTorch's fused attention, which doesn't need the full attention
+   matrix.
+   On a 420 s window that matrix took 7 GB in every layer.
+
+2. SongFormer only uses the output of the 10th layer of each encoder, so we stop there
+   instead of running all 12.
+
+3. The conv layers in front of each encoder cost more than the encoder itself.
+   Their input now uses a memory layout that makes them 20 to 35% faster on the GPU.
+
+4. Those conv layers only look a few frames around each point, so cutting the audio only
+   changes about 4 frames next to the cut.
+   That lets them run on 40 s pieces that overlap a little, which keeps memory low.
+
+5. For the same reason, the 30 s chunks reuse the conv output of the whole window.
+   Only a few frames at the edges of each chunk get recomputed.
+   This saves about a quarter of the time.
+
+6. The full 30 s chunks go through the encoders together, in one batch.
+
+The model's own code also gets stuck in an endless loop when less than 43 ms of audio is
+left after a 420 s window.
+`_forward` just drops that bit.
+
+## Accuracy
+
+Accuracy matters more than speed here.
+Every change above gives the same result, up to tiny rounding differences.
+
+We compared `_forward` with the model's own forward pass on 20 tracks from the library,
+from 4 to 56 minutes long, and on cuts of one track at 20, 60.5, 90, 420, 421 and 450 s.
+The segments were the same every time.
+
+On the same device, the raw scores differ by at most 7e-6.
+For comparison, the model's own code gives scores that differ by up to 4.9e-4 between the
+GPU and the CPU.
+
+Half precision (f16) would make it about 25% faster, but it moves the scores by up to 1.2.
+That is too much to trust, so we don't use it.
+
+`tests/test_songformer.py` checks the new attention and the conv shortcuts against the
+straightforward computation.
+The test fails if the overlap gets too small.
+
+`test_songformer_forward_matches_upstream_forward` in `tests/test_e2e.py` runs both
+forward passes on a real track and on cuts of it, and expects the same segments.
+Turn it on with `AUTOHOTCUE_RUN_SONGFORMER_E2E=1`.
+
+## Runtime (M5 Max 128 GB, Python 3.14, torch 2.14.1, 2026-10-29)
+
+Time for the forward pass only, with the model already loaded (loading takes about 2 s):
+
+| Track | Length | old, CPU | old, MPS | new, MPS | new, CPU |
+|-------|--------|----------|----------|----------|----------|
+| Eugenio Fico - Funky Riders | 307 s | 83 s | 6.7 s | 2.9 s | 34 s |
+| Uncle Dog - Eatwhite | 514 s | 134 s | 10.6 s | 5.0 s | 57 s |
+| DJ 3000 - Somewhere In Detroit Mix | 56 min | not run | 94 s | 44 s | not run |
+
+A full `propose` with `--engine ml-songformer` on a 4.5-minute track takes about 7 s,
+startup included.
+It used to take a minute.
+
+`effective_parallel_jobs` forces `jobs=1` for `ml-songformer`, because there is one model
+per process and the analysis stays in the main process.
 
 ## Memory
 
-CPU f32 forward pass peaks at **~24 GB transient RSS** per track (420 s attention windows).
-On a 32 GB machine an uncapped excursion can swap-thrash the whole system.
+| | old | new |
+|-|-----|-----|
+| GPU memory (MPS) | 23 to 35 GB | 7.2 GB |
+| Peak RAM (CPU) | 23 to 41 GB | 11 to 12.5 GB |
 
-The backend sets a kernel-enforced process allocation ceiling via
-`resource.setrlimit(RLIMIT_DATA)` before model load (default **26 GB** via
-`AUTOHOTCUE_SONGFORMER_MEM_GB`; set to **0** to disable). A hit surfaces as a clear
-`RuntimeError` with remediation hints instead of silent swapping.
+Most of the old CPU peak came from the conv layers.
+On a 420 s window they needed 23 GB on their own, and running them in pieces fixed that.
 
-Alternatives evaluated and rejected:
-
-| Approach | Outcome |
-|----------|---------|
-| MPS (`AUTOHOTCUE_SONGFORMER_DEVICE=mps`) | Needs >17 GB GPU pool; OOMs under default watermarks on 32 GB |
-| bf16 on CPU | No Apple-silicon bf16 support; ~20× slower |
-| 210 s windows (half default) | Corrupts section labels |
-| Bundled SDPA "flash" path | Parked as future work — requires import shims; caused an unbounded allocation excursion in testing |
+On the GPU, the process itself stays around 1 GB.
+The GPU memory is taken from the same RAM, since it is shared on Apple Silicon.
 
 ## Implementation notes
 
@@ -97,27 +153,21 @@ Alternatives evaluated and rejected:
 3. **`msaf` stub**: remote `model.py` imports `msaf` only for eval-time `cal_metrics()`;
    the backend stubs `msaf` in `sys.modules` (`msaf` is not installable on numpy 2 /
    Python 3.13).
-4. **Trailing NaN logits**: the model emits NaN logits in trailing frames (harmless
-   `RuntimeWarning: invalid value encountered in divide`); the segment mapper rejects
-   any non-finite boundary.
+4. **Trailing NaN logits**: on tracks longer than 420 s, the last frame or two never get
+   a score and end up NaN.
+   The model's own code does the same.
+   The segment mapper rejects any boundary that isn't a real number.
 5. **TLS-intercepting firewalls**: machines with a socket-firewall override
    `SSL_CERT_FILE` in child processes; the backend re-points trust to certifi before
    the one-time download.
 6. **Label mapping**: output labels `intro` / `verse` / `chorus` / `bridge` / `inst` /
-   `outro`; `pre-chorus` → `verse`; `silence` segments dropped.
+   `outro`; `pre-chorus` becomes `verse`; `silence` segments are dropped.
 
 ## Status / open threads
 
-Both open threads have self-contained roadmap briefs:
-
-- **Quantitative bench** (`ml` vs `ml-allin1` vs `ml-songformer`) — blocked on the
+- **Quantitative bench** (`ml` vs `ml-allin1` vs `ml-songformer`): blocked on the
   ground-truth labeling task (`truth.json` does not exist yet); plan and decision rule in
   [docs/roadmap/03-songformer-bench.md](roadmap/03-songformer-bench.md). Until then the
   evidence is qualitative: musically sensible cue layouts on Afro House tracks (Drop on
   the first chorus, Breakdown on the bridge) plus the paper's boundary numbers.
-- **Memory / speed fix via the bundled SDPA attention** — the only known route below the
-  ~24 GB peak without quality loss; activation recipe, failure analysis, and acceptance
-  criteria in [docs/roadmap/07-songformer-flash-memory.md](roadmap/07-songformer-flash-memory.md).
-  **Off-machine work only** (a first attempt swap-thrashed a 32 GB machine). MPS support
-  rides on this item; until it lands, CPU f32 with the kernel ceiling is the only
-  supported configuration.
+- The memory and speed problem (roadmap item 07) is solved, see "Forward pass" above.

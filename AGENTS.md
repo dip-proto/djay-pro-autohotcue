@@ -20,7 +20,7 @@ Laplacian segmentation + the pure cue policy, `--engine ml-allin1` swaps structu
 for **all-in-one-mlx** (Apple Silicon; `uv sync --extra allin1`),
 `--engine ml-raveform` runs the same model trained on **Raveform** dance tracks,
 which labels drops, breakdowns and buildups (same extra; weights downloaded on first use),
-`--engine ml-songformer` swaps structure for **SongFormer** (CPU by default;
+`--engine ml-songformer` swaps structure for **SongFormer** (MPS when available;
 `uv sync --extra songformer`). A legacy band-energy engine remains behind
 `--engine legacy`.
 
@@ -89,7 +89,7 @@ grid-locked lattice; `ml` / `ml-librosa` use librosa Laplacian structure; `ml-al
 uses all-in-one-mlx (optional extra; see `docs/allin1-backend.md`); `ml-raveform` uses the
 all-in-one model trained on dance music, whose label order was worked out by hand
 (read `docs/raveform-backend.md` before touching `RAVEFORM_LABELS`); `ml-songformer` uses
-SongFormer (optional extra; see `docs/songformer-backend.md`; CPU by default). djay's BPM
+SongFormer (optional extra; see `docs/songformer-backend.md`; MPS when available). djay's BPM
 is cross-checked only under ml engines; placement uses beat_this downbeats. `apply` still
 writes absolute seconds.
 

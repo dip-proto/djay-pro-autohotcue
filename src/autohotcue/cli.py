@@ -588,7 +588,7 @@ def _add_engine_arg(sp):
         help="analysis engine: ml-bass (kick-band events + phrase snapping), "
         "ml/ml-librosa (librosa structure), ml-allin1 (all-in-one-mlx structure), "
         "ml-raveform (all-in-one retrained on EDM section labels), "
-        "ml-songformer (SongFormer structure, CPU), legacy (default: ml-bass)",
+        "ml-songformer (SongFormer structure), legacy (default: ml-bass)",
     )
 
 

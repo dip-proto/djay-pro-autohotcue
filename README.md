@@ -85,7 +85,7 @@ they differ only in how they decide *where the cues go*.
 | `ml` / `ml-librosa` | librosa Laplacian segmentation | song-form segments → cue policy |
 | `ml-allin1`       | [all-in-one-mlx](https://github.com/mir-aidj/all-in-one) | Apple-Silicon GPU; `uv sync --extra allin1` · `docs/allin1-backend.md` |
 | `ml-raveform`     | all-in-one trained on [Raveform](https://mir-aidj.github.io/raveform/) dance tracks | labels drops, breakdowns and buildups; same extra; weights downloaded on first use · `docs/raveform-backend.md` |
-| `ml-songformer`   | [SongFormer](https://github.com/MOSS-Music/SongFormer) | CPU by default; `uv sync --extra songformer` · `docs/songformer-backend.md` |
+| `ml-songformer`   | [SongFormer](https://github.com/MOSS-Music/SongFormer) | Apple-Silicon GPU when available, CPU otherwise; `uv sync --extra songformer` · `docs/songformer-backend.md` |
 | `legacy`          | band-energy heuristics | pre-overhaul behavior, kept for comparison |
 
 djay's stored BPM is only ever **cross-checked** against the tracked tempo — it never
