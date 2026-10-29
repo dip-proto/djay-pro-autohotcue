@@ -536,10 +536,11 @@ def fit_grid(
 def _nearest_nonnegative_lattice(t: float, anchor: float, beat_period: float) -> float:
     n_min = int(np.ceil(-anchor / beat_period - 1e-12)) if anchor > 0 else 0
     rel = (t - anchor) / beat_period
-    candidates = {
+    # Ties go to the earlier beat, so cues moved by whole beats snap the same way.
+    candidates = sorted({
         max(n_min, int(np.floor(rel))),
         max(n_min, int(np.ceil(rel - 1e-12))),
-    }
+    })
     best_n = min(candidates, key=lambda k: abs(t - (anchor + k * beat_period)))
     return anchor + best_n * beat_period
 

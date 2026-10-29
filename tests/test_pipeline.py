@@ -374,6 +374,7 @@ def test_dsp_threads_zero_forces_inline(monkeypatch):
         ("ml", True),
         ("ml-librosa", True),
         ("ml-allin1", False),
+        ("ml-raveform", False),
         ("ml-songformer", False),
         ("legacy", False),
     ],
@@ -382,7 +383,8 @@ def test_is_cpu_dsp_engine(engine, expected):
     assert analysis.is_cpu_dsp_engine(engine) is expected
 
 
-def test_allin1_engine_stays_inline(monkeypatch):
+@pytest.mark.parametrize("engine", ["ml-allin1", "ml-raveform"])
+def test_model_engines_stay_inline(monkeypatch, engine):
     monkeypatch.setattr(pl, "decode", lambda path: path)
     seen: list[str] = []
 
@@ -401,7 +403,7 @@ def test_allin1_engine_stays_inline(monkeypatch):
 
     items = [(0, "/a", None), (1, "/b", None)]
     out = list(pl.iter_analyze_pipelined(
-        items, decode_threads=2, engine="ml-allin1",
+        items, decode_threads=2, engine=engine,
     ))
     assert len(out) == 2
     assert sorted(seen) == ["/a", "/b"]
@@ -449,7 +451,8 @@ def test_cmd_propose_folder_routes_through_pipeline(monkeypatch, tmp_path, capsy
 
     args = types.SimpleNamespace(
         path=str(tmp_path), bpm=None, library=None, engine="ml-bass",
-        nudge_beats=0.0, jobs=1, decode_threads=2, dsp_threads=1, no_pipeline=False,
+        nudge_beats=0.0, pre_drop_bars=8, jobs=1, decode_threads=2, dsp_threads=1,
+        no_pipeline=False,
     )
     cli.cmd_propose(args)
 
@@ -492,7 +495,8 @@ def test_cmd_apply_pipeline_precheck_failure_does_not_abort_batch(monkeypatch, t
 
     args = types.SimpleNamespace(
         path=str(tmp_path), bpm=None, library="dummy", engine="ml-bass",
-        nudge_beats=0.0, jobs=1, decode_threads=2, dsp_threads=1, no_pipeline=False,
+        nudge_beats=0.0, pre_drop_bars=8, jobs=1, decode_threads=2, dsp_threads=1,
+        no_pipeline=False,
         force=False, no_grid_lock=False, backup_dir=str(tmp_path / "bk"),
     )
     cli.cmd_apply(args)
@@ -502,3 +506,19 @@ def test_cmd_apply_pipeline_precheck_failure_does_not_abort_batch(monkeypatch, t
     assert "2 written, 0 skipped, 1 failed (3 files)" in out
     assert not _decode_threads_alive()
     assert not _dsp_threads_alive()
+
+
+@pytest.mark.parametrize("dsp_threads", [0, 1])
+def test_pre_drop_bars_reach_the_cue_stage(monkeypatch, dsp_threads):
+    monkeypatch.setattr(pl, "decode", lambda path: path)
+    seen = []
+
+    def record(y, path, *rest, **kwargs):
+        seen.append(kwargs["pre_drop_bars"])
+        return ("R", path)
+
+    _stub_offload(monkeypatch, cues_fn=record)
+    _stub_inline(monkeypatch, record)
+    items = [(i, f"/{i}", None) for i in range(3)]
+    list(pl.iter_analyze_pipelined(items, pre_drop_bars=16, dsp_threads=dsp_threads))
+    assert seen == [16, 16, 16]

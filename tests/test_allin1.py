@@ -25,6 +25,7 @@ def test_normalize_engine_aliases():
     assert analysis.normalize_engine("ml") == ("ml", "librosa")
     assert analysis.normalize_engine("ml-librosa") == ("ml-librosa", "librosa")
     assert analysis.normalize_engine("ml-allin1") == ("ml-allin1", "allin1")
+    assert analysis.normalize_engine("ml-raveform") == ("ml-raveform", "raveform")
     assert analysis.normalize_engine("legacy") == ("legacy", None)
 
 
@@ -35,6 +36,7 @@ def test_normalize_engine_rejects_unknown():
 
 def test_effective_parallel_jobs_forces_single_worker_for_allin1():
     assert analysis.effective_parallel_jobs("ml-allin1", 8) == 1
+    assert analysis.effective_parallel_jobs("ml-raveform", 8) == 1
     assert analysis.effective_parallel_jobs("ml", 8) == 8
     assert analysis.effective_parallel_jobs("legacy", 4) == 4
 
@@ -290,7 +292,7 @@ def test_segment_structure_allin1_plumbing(monkeypatch, tmp_path):
 
     model = SimpleNamespace(cfg=SimpleNamespace(sample_rate=44100))
     monkeypatch.setattr(mod, "_get_separator", lambda: FakeSeparator())
-    monkeypatch.setattr(mod, "_get_model", lambda _wd: model)
+    monkeypatch.setattr(mod, "_get_model", lambda *_: model)
 
     spec_calls: dict[str, object] = {}
 
@@ -364,7 +366,7 @@ def test_segment_structure_allin1_sample_rate_mismatch_raises(monkeypatch, tmp_p
     monkeypatch.setattr(
         mod,
         "_get_model",
-        lambda _wd: SimpleNamespace(cfg=SimpleNamespace(sample_rate=48000)),
+        lambda *_: SimpleNamespace(cfg=SimpleNamespace(sample_rate=48000)),
     )
 
     spec_mod = types.ModuleType("allin1_mlx.spectrogram")

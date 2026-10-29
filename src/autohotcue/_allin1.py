@@ -18,11 +18,9 @@ ALLIN1_LABELS = frozenset(
 _EDGE_LABEL_MAP = {"start": "intro", "end": "outro"}
 _WEIGHTS_MARKER = "harmonix-fold0_mlx.npz"
 _MODEL_NAME = "harmonix-fold0"
-_DEMUCS_SEED = 0
 
 _separator = None
-_model = None
-_weights_dir: Path | None = None
+_models: dict[tuple[Path, str], object] = {}
 _mlx_cache_configured = False
 
 
@@ -55,12 +53,16 @@ def _import_error(exc: BaseException | None = None) -> RuntimeError:
     return RuntimeError(msg)
 
 
+def weights_cache() -> Path:
+    return Path.home() / ".cache/autohotcue/mlx-weights"
+
+
 def _candidate_weight_dirs() -> list[Path]:
     out: list[Path] = []
     env = os.environ.get("ALLIN1_MLX_WEIGHTS_DIR")
     if env:
         out.append(Path(env).expanduser())
-    out.append(Path.home() / ".cache/autohotcue/mlx-weights")
+    out.append(weights_cache())
     out.append(Path("all-in-one-mlx/mlx-weights"))
     here = Path(__file__).resolve()
     for parent in here.parents:
@@ -83,7 +85,7 @@ def resolve_weights_dir() -> Path:
         if _has_weights(env_path):
             return env_path
 
-    cache = Path.home() / ".cache/autohotcue/mlx-weights"
+    cache = weights_cache()
     if _has_weights(cache):
         return cache.resolve()
     for candidate in _candidate_weight_dirs():
@@ -151,12 +153,8 @@ def _get_separator():
         # equal-or-faster than upstream's default 8 at ~2.7x lower MLX peak
         # (docs/allin1-performance.md); larger GPUs may prefer 8.
         batch = int(os.environ.get("AUTOHOTCUE_DEMUCS_BATCH", "1"))
-        # demucs' shift trick draws a random offset on every call. Unseeded, the
-        # same track separates differently on each run and all-in-one moves
-        # section boundaries by whole phrases, so cues would not be reproducible.
-        _separator = Separator(
-            model="htdemucs", progress=False, batch_size=batch, seed=_DEMUCS_SEED
-        )
+        # Seeded, or the same track gets different cues on every run.
+        _separator = Separator(model="htdemucs", progress=False, batch_size=batch, seed=0)
     return _separator
 
 
@@ -171,21 +169,63 @@ def _release_torch_mps_cache() -> None:
         pass
 
 
-def _get_model(weights_dir: Path):
-    global _model, _weights_dir
-    if _model is None or _weights_dir != weights_dir:
+def _get_model(weights_dir: Path, model_name: str = _MODEL_NAME):
+    key = (weights_dir, model_name)
+    if key not in _models:
         _check_platform()
         try:
             from allin1_mlx.models.loaders_mlx import load_pretrained_model_mlx
         except ImportError as exc:
             raise _import_error(exc) from exc
-        raw = load_pretrained_model_mlx(
-            model_name=_MODEL_NAME,
-            weights_dir=weights_dir,
+        raw = load_pretrained_model_mlx(model_name=model_name, weights_dir=weights_dir)
+        _models[key] = _AllInOneForwardWrapper(raw)
+    return _models[key]
+
+
+def _prepare(weights_dir: Path, model_name: str = _MODEL_NAME):
+    """Load the separator and a model, and check they use the same sample rate."""
+    _check_platform()
+    _ensure_mlx_env()
+    _configure_mlx_cache()
+    separator = _get_separator()
+    model = _get_model(weights_dir, model_name)
+    if separator.samplerate != model.cfg.sample_rate:
+        raise RuntimeError(
+            f"demucs samplerate ({separator.samplerate}) != all-in-one model sample_rate "
+            f"({model.cfg.sample_rate}); segment timestamps would be mis-scaled"
         )
-        _model = _AllInOneForwardWrapper(raw)
-        _weights_dir = weights_dir
-    return _model
+    return separator, model
+
+
+def _track_spectrogram(path: str, separator):
+    try:
+        from allin1_mlx.spectrogram import spectrogram_from_stems
+    except ImportError as exc:
+        raise _import_error(exc) from exc
+    _release_torch_mps_cache()
+    # The stems (about 0.5 GB) are freed when this returns, before inference.
+    _, stems = separator.separate_audio_file(path, return_mx=True)
+    return spectrogram_from_stems(
+        stems, sample_rate=separator.samplerate, backend="mlx_fast", return_mx=True
+    )
+
+
+def _probabilities(spec, model):
+    """Run the model on one track's spectrogram."""
+    import mlx.core as mx
+
+    spec_mx = spec if spec.__class__.__module__.startswith("mlx") else mx.array(spec)
+    logits = model(spec_mx[None, ...], return_embeddings=False)
+    prob_section = mx.sigmoid(logits.logits_section[0])
+    prob_function = mx.softmax(logits.logits_function[0], axis=0)
+    mx.eval(prob_section, prob_function)
+    return logits, np.array(prob_section, copy=False), np.array(prob_function, copy=False)
+
+
+def _clear_mlx_cache() -> None:
+    import mlx.core as mx
+
+    mx.clear_cache()
 
 
 def _map_allin1_segments(result, duration_s: float) -> list[Segment]:
@@ -220,8 +260,6 @@ def _functional_result(spec, model) -> SimpleNamespace:
     which costs ~1.4s/222s track. Probabilities are computed exactly as the
     helper does, so the functional postprocess sees identical inputs.
     """
-    import mlx.core as mx
-
     try:
         from allin1_mlx.postprocessing.functional_mlx import (
             postprocess_functional_structure_mlx,
@@ -229,16 +267,9 @@ def _functional_result(spec, model) -> SimpleNamespace:
     except ImportError as exc:
         raise _import_error(exc) from exc
 
-    spec_mx = spec if spec.__class__.__module__.startswith("mlx") else mx.array(spec)
-    logits = model(spec_mx[None, ...], return_embeddings=False)
-    prob_section = mx.sigmoid(logits.logits_section[0])
-    prob_function = mx.softmax(logits.logits_function[0], axis=0)
-    mx.eval(prob_section, prob_function)
+    logits, prob_sections, prob_functions = _probabilities(spec, model)
     segments = postprocess_functional_structure_mlx(
-        logits,
-        model.cfg,
-        prob_sections=np.array(prob_section, copy=False),
-        prob_functions=np.array(prob_function, copy=False),
+        logits, model.cfg, prob_sections=prob_sections, prob_functions=prob_functions
     )
     return SimpleNamespace(segments=segments)
 
@@ -251,38 +282,11 @@ def segment_structure_allin1(
 ) -> StructureAnalysis:
     """Structure segments from all-in-one-mlx (demucs + harmonix-fold0)."""
     # demucs reads *path*; y/sr are the ffmpeg decode used for energy ranks
-    weights_dir = resolve_weights_dir()
+    separator, model = _prepare(resolve_weights_dir())
     try:
-        from allin1_mlx.spectrogram import spectrogram_from_stems
-    except ImportError as exc:
-        raise _import_error(exc) from exc
-
-    _ensure_mlx_env()
-    _configure_mlx_cache()
-    separator = _get_separator()
-    model = _get_model(weights_dir)
-    sep_sr = separator.samplerate
-    model_sr = model.cfg.sample_rate
-    if sep_sr != model_sr:
-        raise RuntimeError(
-            f"demucs samplerate ({sep_sr}) != all-in-one model sample_rate "
-            f"({model_sr}); segment timestamps would be mis-scaled"
-        )
-    _release_torch_mps_cache()
-    try:
-        _, stems = separator.separate_audio_file(path, return_mx=True)
-        spec = spectrogram_from_stems(
-            stems,
-            sample_rate=sep_sr,
-            backend="mlx_fast",
-            return_mx=True,
-        )
-        del stems  # ~0.5 GB of MLX stem audio; inference is the memory peak
-        result = _functional_result(spec, model)
+        result = _functional_result(_track_spectrogram(path, separator), model)
         segments = _map_allin1_segments(result, beat.duration_s)
         segments = energy_ranks_for_segments(y, sr, segments)
         return StructureAnalysis(segments=segments, source="allin1")
     finally:
-        import mlx.core as mx
-
-        mx.clear_cache()
+        _clear_mlx_cache()

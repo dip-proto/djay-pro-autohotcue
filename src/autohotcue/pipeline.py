@@ -20,6 +20,7 @@ import threading
 from collections.abc import Iterable, Iterator
 
 from autohotcue.analysis import (
+    PRE_DROP_BARS,
     analyze_decoded,
     cues_from_beats,
     decode,
@@ -63,6 +64,7 @@ def iter_analyze_pipelined(
     *,
     engine: str = "ml-bass",
     nudge_beats: float = 0.0,
+    pre_drop_bars: int = PRE_DROP_BARS,
     device: str | None = None,
     decode_threads: int = 2,
     lookahead: int = 2,
@@ -123,7 +125,8 @@ def iter_analyze_pipelined(
     if not offload:
         yield from _iter_inline(
             decode_q, decode_workers, decode_threads, stop,
-            engine=engine, nudge_beats=nudge_beats, device=device,
+            engine=engine, nudge_beats=nudge_beats, pre_drop_bars=pre_drop_bars,
+            device=device,
         )
         return
 
@@ -146,6 +149,7 @@ def iter_analyze_pipelined(
                     result = cues_from_beats(
                         y, path, beat, known_bpm=known_bpm,
                         engine=engine, nudge_beats=nudge_beats,
+                        pre_drop_bars=pre_drop_bars,
                     )
                     payload = (token, path, result, None)
                 except Exception as exc:
@@ -221,6 +225,7 @@ def _iter_inline(
     *,
     engine: str,
     nudge_beats: float,
+    pre_drop_bars: int,
     device: str | None,
 ) -> Iterator[tuple]:
     finished = 0
@@ -238,6 +243,7 @@ def _iter_inline(
                 result = analyze_decoded(
                     y, path, known_bpm=known_bpm, engine=engine,
                     device=device, nudge_beats=nudge_beats,
+                    pre_drop_bars=pre_drop_bars,
                 )
                 yield token, path, result, None
             except Exception as exc:

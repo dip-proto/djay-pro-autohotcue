@@ -89,11 +89,9 @@ def build_cue_objects(cues: list[dict]) -> list[tsaf.Obj]:
 
 # Obj classnames that may appear inside mediaItemUserData when editing in place.
 # Any other nested Obj uses encodings or field order autohotcue does not reproduce.
-# A byte-exact round-trip is not enough to add a class here: the fingerprint
-# corrupted records twice while round-tripping fine, because its trailing
-# timestampIdentifier field is a container back-reference and the old codec
-# copied the stale index. It is safe now that tsaf.Ref re-targets that index
-# (docs/audio-alignment-fingerprint.md).
+# A clean round-trip doesn't prove an edit is safe: the fingerprint passed it and
+# still broke records until tsaf handled its back-reference.
+# Read docs/audio-alignment-fingerprint.md before adding a class.
 EDIT_SAFE_OBJ_CLASSNAMES = frozenset({
     "ADCMediaItemUserData",
     "ADCMediaItemTitleID",

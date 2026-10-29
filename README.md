@@ -54,7 +54,7 @@ The `ml-bass` engine places this 8-pad layout (cue letters mirror the djcues con
 |-----|------------|-----------|
 | A   | First Beat | first bar at full level |
 | B   | Loop In    | = A |
-| C   | Buildup    | the pre-drop bass-out (build / vocal) |
+| C   | Buildup    | exactly 8 bars before the drop (see below) |
 | D   | Drop       | the payoff bass-in — a return, or ≥20% into the track (never the groove start) |
 | E   | Breakdown  | first ≥8-bar bass-out after the drop |
 | F   | 2nd Drop   | first ≥8-bar bass-return after the breakdown |
@@ -63,6 +63,14 @@ The `ml-bass` engine places this 8-pad layout (cue letters mirror the djcues con
 
 The structure engines (below) instead map detected song-form segments onto the same
 pads via a pure placement policy (`cuepolicy.py`).
+
+Whatever the engine, pad C ends up 8 bars before the drop.
+It's a cue you can rely on to mix in just before a drop.
+
+`--pre-drop-bars N` changes the distance, and `--pre-drop-bars 0` keeps the
+engine's own buildup cue instead.
+If a cue is already there, nothing changes.
+If the drop comes too soon after the start, pad C stays where the engine put it.
 
 ---
 
@@ -76,6 +84,7 @@ they differ only in how they decide *where the cues go*.
 | **`ml-bass`** (default) | kick-band bass events + 8-bar phrase snapping | Afro-House-native; no segmentation; pure numpy/scipy |
 | `ml` / `ml-librosa` | librosa Laplacian segmentation | song-form segments → cue policy |
 | `ml-allin1`       | [all-in-one-mlx](https://github.com/mir-aidj/all-in-one) | Apple-Silicon GPU; `uv sync --extra allin1` · `docs/allin1-backend.md` |
+| `ml-raveform`     | all-in-one trained on [Raveform](https://mir-aidj.github.io/raveform/) dance tracks | labels drops, breakdowns and buildups; same extra; weights downloaded on first use · `docs/raveform-backend.md` |
 | `ml-songformer`   | [SongFormer](https://github.com/MOSS-Music/SongFormer) | CPU by default; `uv sync --extra songformer` · `docs/songformer-backend.md` |
 | `legacy`          | band-energy heuristics | pre-overhaul behavior, kept for comparison |
 
@@ -110,6 +119,7 @@ uv run autohotcue propose "/path/to/track.opus"
 # Other engines
 uv run autohotcue propose "/path/to/track.opus" --engine ml          # librosa structure
 uv run autohotcue propose "/path/to/track.opus" --engine ml-allin1   # needs --extra allin1
+uv run autohotcue propose "/path/to/track.opus" --engine ml-raveform # EDM section labels, same extra
 uv run autohotcue propose "/path/to/track.opus" --engine legacy
 
 # Render a waveform + segment/bass spans + downbeat ticks + cue map to PNG
@@ -247,10 +257,12 @@ src/autohotcue/
     djaydb.py     # MediaLibrary.db reader/writer, backups, cue-record builder
     backends.py   # beat_this + librosa / allin1 / songformer structure backends
     _allin1.py    # optional all-in-one-mlx structure (ml-allin1)
+    _raveform.py  # optional Raveform-trained all-in-one structure (ml-raveform)
     _songformer.py # optional SongFormer structure (ml-songformer)
     gridlock.py   # straight beat-grid fit + cue snapping to djay's lattice
     bassline.py   # ml-bass: kick-band bass events + 8-bar phrase snapping (default)
     cuepolicy.py  # pure structure-based cue-placement policy
+    ravepolicy.py # pure cue policy for Raveform section labels
     analysis.py   # decode + analyze() dispatcher (infer_beats / cues_from_beats split)
     pipeline.py   # decode-ahead + DSP-offload folder pipeline
     bench.py      # ground-truth eval harness (hit-rate, MAE, runtime)

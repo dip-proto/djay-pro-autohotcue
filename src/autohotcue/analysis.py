@@ -18,6 +18,7 @@ import numpy as np
 
 SR = 44100
 HOP = 512
+PRE_DROP_BARS = 8
 
 
 @dataclass
@@ -278,32 +279,32 @@ def propose_cues_legacy(
     return grid, p
 
 
-VALID_ENGINES = frozenset(
-    {"ml", "ml-librosa", "ml-allin1", "ml-songformer", "ml-bass", "legacy"}
-)
+# Engine -> structure backend. ml-bass and legacy don't segment the track.
+ENGINES = {
+    "ml-bass": None,
+    "ml": "librosa",
+    "ml-librosa": "librosa",
+    "ml-allin1": "allin1",
+    "ml-raveform": "raveform",
+    "ml-songformer": "songformer",
+    "legacy": None,
+}
+VALID_ENGINES = frozenset(ENGINES)
 
 
 def normalize_engine(engine: str) -> tuple[str, str | None]:
     """Map CLI engine name to (track.engine label, structure_backend or None)."""
-    if engine not in VALID_ENGINES:
+    if engine not in ENGINES:
         raise ValueError(
-            f"unknown engine {engine!r} (choose from {', '.join(sorted(VALID_ENGINES))})"
+            f"unknown engine {engine!r} (choose from {', '.join(sorted(ENGINES))})"
         )
-    if engine == "legacy":
-        return "legacy", None
-    if engine == "ml-allin1":
-        return "ml-allin1", "allin1"
-    if engine == "ml-songformer":
-        return "ml-songformer", "songformer"
-    if engine == "ml-bass":
-        return "ml-bass", None
-    return engine, "librosa"
+    return engine, ENGINES[engine]
 
 
 def effective_parallel_jobs(engine: str, jobs: int) -> int:
-    """ml-allin1 / ml-songformer load heavyweight models; never fan out across workers."""
+    """Engines with a big model run in a single process."""
     _, structure_backend = normalize_engine(engine)
-    if structure_backend in ("allin1", "songformer"):
+    if structure_backend in ("allin1", "raveform", "songformer"):
         return 1
     return jobs
 
@@ -336,6 +337,7 @@ def analyze(
     device: str | None = None,
     jobs: int = 1,
     nudge_beats: float = 0.0,
+    pre_drop_bars: int = PRE_DROP_BARS,
 ) -> tuple[TrackAnalysis, CueProposal]:
     """Analyze a track and propose cues via the ml or legacy engine."""
     track_engine, structure_backend = normalize_engine(engine)
@@ -349,13 +351,58 @@ def analyze(
             engine="legacy",
             djay_bpm=known_bpm,
         )
+        place_pre_drop_cue(prop, track, pre_drop_bars)
         return track, prop
 
     dev = _resolve_device(device, jobs)
     return analyze_decoded(
         decode(path), path, known_bpm=known_bpm, engine=engine,
-        device=dev, nudge_beats=nudge_beats,
+        device=dev, nudge_beats=nudge_beats, pre_drop_bars=pre_drop_bars,
     )
+
+
+def _bars_before(track: TrackAnalysis, t: float, bars: int) -> float | None:
+    fit = track.grid_fit
+    if fit is not None and fit.ok:
+        # Whole grid beats, so the gap survives snapping. Bars follow djay's tempo,
+        # like ml-bass, in case the fit locked onto double or half of it.
+        beats_per_bar = max(1, round(4.0 * fit.bpm / fit.render_bpm))
+        return t - bars * beats_per_bar * 60.0 / fit.bpm
+    if track.downbeats is not None and len(track.downbeats):
+        # No straight grid: count downbeats so tempo changes are followed.
+        i = int(np.argmin(np.abs(track.downbeats - t)))
+        if i < bars:
+            return None
+        return float(track.downbeats[i - bars] + (t - track.downbeats[i]))
+    return t - bars * 240.0 / track.bpm
+
+
+def place_pre_drop_cue(prop: CueProposal, track: TrackAnalysis, bars: int = PRE_DROP_BARS) -> None:
+    """Move pad C to exactly ``bars`` bars before the drop, unless a cue is already there.
+
+    ``bars <= 0`` turns this off.
+    """
+    drop = prop.positions.get("D")
+    if bars <= 0 or drop is None:
+        return
+    target = _bars_before(track, drop, bars)
+    fit = track.grid_fit
+    half_beat = 30.0 / (fit.bpm if fit is not None and fit.ok else track.bpm)
+    if target is not None and any(
+        abs(t - target) <= half_beat for pad, t in prop.positions.items() if pad != "C"
+    ):
+        return
+    loop_in = prop.positions.get("B", prop.positions.get("A", 0.0))
+    if target is None or target <= loop_in:
+        prop.notes.append(f"C: no cue {bars} bars before the drop (drop too close to the start)")
+        return
+    replaced = prop.positions.get("C")
+    prop.positions["C"] = target
+    prop.notes = [n for n in prop.notes if not n.startswith("C (Buildup): omitted")]
+    note = f"C: {bars} bars before the drop"
+    if replaced is not None and abs(replaced - target) > half_beat:
+        note += f" (replaces buildup at {replaced:.2f}s)"
+    prop.notes.append(note)
 
 
 def infer_beats(y: np.ndarray, device: str | None = None):
@@ -373,6 +420,7 @@ def cues_from_beats(
     known_bpm: float | None = None,
     engine: str = "ml-bass",
     nudge_beats: float = 0.0,
+    pre_drop_bars: int = PRE_DROP_BARS,
 ) -> tuple[TrackAnalysis, CueProposal]:
     """CPU DSP after inference: grid fit + cue proposal."""
     from autohotcue.backends import segment_structure
@@ -391,32 +439,22 @@ def cues_from_beats(
         float(beat.beats[0]) if len(beat.beats) else 0.0
     )
 
+    segments = bass_analysis = None
     if track_engine == "ml-bass":
         from autohotcue.bassline import propose_cues_bass
 
         prop, bass_analysis = propose_cues_bass(
             y, SR, beat, grid_fit, djay_bpm=known_bpm,
         )
-        track = TrackAnalysis(
-            bpm=beat.bpm,
-            first_beat_s=first_beat,
-            duration_s=beat.duration_s,
-            engine=track_engine,
-            beats=beat.beats,
-            downbeats=beat.downbeats,
-            segments=None,
-            djay_bpm=known_bpm,
-            grid_fit=grid_fit,
-            bass=bass_analysis,
-        )
-        return track, prop
+    else:
+        if structure_backend == "raveform":
+            from autohotcue.ravepolicy import propose_cues_raveform as policy_propose
+        else:
+            from autohotcue.cuepolicy import propose_cues as policy_propose
 
-    from autohotcue.cuepolicy import propose_cues as policy_propose
-
-    structure = segment_structure(
-        path, y, SR, beat, structure_backend=structure_backend or "librosa"
-    )
-    prop = policy_propose(beat, structure, djay_bpm=known_bpm)
+        structure = segment_structure(path, y, SR, beat, structure_backend=structure_backend)
+        prop = policy_propose(beat, structure, djay_bpm=known_bpm)
+        segments = list(structure.segments)
 
     track = TrackAnalysis(
         bpm=beat.bpm,
@@ -425,10 +463,12 @@ def cues_from_beats(
         engine=track_engine,
         beats=beat.beats,
         downbeats=beat.downbeats,
-        segments=list(structure.segments),
+        segments=segments,
         djay_bpm=known_bpm,
         grid_fit=grid_fit,
+        bass=bass_analysis,
     )
+    place_pre_drop_cue(prop, track, pre_drop_bars)
     return track, prop
 
 
@@ -439,6 +479,7 @@ def analyze_decoded(
     engine: str = "ml-bass",
     device: str | None = None,
     nudge_beats: float = 0.0,
+    pre_drop_bars: int = PRE_DROP_BARS,
 ) -> tuple[TrackAnalysis, CueProposal]:
     """Run the analysis pipeline on an already-decoded mono array.
 
@@ -450,4 +491,5 @@ def analyze_decoded(
     beat = infer_beats(y, device)
     return cues_from_beats(
         y, path, beat, known_bpm=known_bpm, engine=engine, nudge_beats=nudge_beats,
+        pre_drop_bars=pre_drop_bars,
     )

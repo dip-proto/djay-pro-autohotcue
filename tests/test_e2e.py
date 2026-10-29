@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import time
 from pathlib import Path
@@ -11,13 +12,13 @@ import pytest
 
 from autohotcue import analysis, djaydb
 
-REAL_LIBRARY = Path(
-    "/Users/payne/Music/djay/djay Media Library.djayMediaLibrary/MediaLibrary.db"
-)
+# To run these on your own files, set AUTOHOTCUE_E2E_LIBRARY, AUTOHOTCUE_E2E_TRACKS
+# (paths separated by ":") and AUTOHOTCUE_E2E_FINGERPRINT_TRACK.
+REAL_LIBRARY = Path(os.environ.get("AUTOHOTCUE_E2E_LIBRARY", djaydb.DEFAULT_LIBRARY))
 
-TEST_PLAYLIST = Path("/Users/payne/Music/Setlist/zzzzzTEST")
+TEST_PLAYLIST = Path.home() / "Music/Setlist/zzzzzTEST"
 
-E2E_TRACKS = [
+_DEFAULT_E2E_TRACKS = [
     str(TEST_PLAYLIST / "Andrea Oliva, Moeaike, Shimza - I Love You So - Shimza Remix (Extended Mix).opus"),
     str(TEST_PLAYLIST / "Jan Blomqvist - Maybe Not (Extended Mix).opus"),
     str(TEST_PLAYLIST / "MIRAMAR - Esplanade (Extended Mix).opus"),
@@ -27,9 +28,15 @@ E2E_TRACKS = [
     ),
 ]
 
-FINGERPRINT_TRACK = str(
-    TEST_PLAYLIST
-    / "Adam Port, Stryv, Keinemusik, Orso, Malachiii - Move (Extended Mix).opus"
+E2E_TRACKS = (
+    os.environ["AUTOHOTCUE_E2E_TRACKS"].split(os.pathsep)
+    if os.environ.get("AUTOHOTCUE_E2E_TRACKS")
+    else _DEFAULT_E2E_TRACKS
+)
+
+FINGERPRINT_TRACK = os.environ.get(
+    "AUTOHOTCUE_E2E_FINGERPRINT_TRACK",
+    str(TEST_PLAYLIST / "Adam Port, Stryv, Keinemusik, Orso, Malachiii - Move (Extended Mix).opus"),
 )
 
 APPLY_TRACK = E2E_TRACKS[0]
@@ -53,6 +60,25 @@ def _on_downbeat(t: float, downbeats: np.ndarray, tol_s: float = 0.015) -> bool:
     if len(downbeats) == 0:
         return False
     return float(np.min(np.abs(downbeats - t))) <= tol_s
+
+
+def _check_cues_on_downbeats(track, prop) -> None:
+    """Every cue is on a tracked downbeat, except a pre-drop pad C, which is on the grid."""
+    from autohotcue.gridlock import snap_cues
+
+    fit = track.grid_fit
+    pre_drop = fit is not None and fit.ok and any(
+        re.match(r"C: \d+ bars before the drop", n) for n in prop.notes
+    )
+    for letter, t in prop.positions.items():
+        if letter == "C" and pre_drop:
+            snapped = snap_cues({"C": t, "D": prop.positions["D"]}, fit)
+            bars = (snapped["D"] - snapped["C"]) * fit.render_bpm / 240.0
+            assert bars == pytest.approx(analysis.PRE_DROP_BARS, rel=1e-3)
+            continue
+        assert _on_downbeat(t, track.downbeats), (
+            f"{letter}={t:.3f}s not on a tracked downbeat"
+        )
 
 
 def _beats_after(t: float, beats: np.ndarray) -> int:
@@ -127,10 +153,7 @@ def test_ml_analyze_real_track(track_path: str):
     assert track.downbeats is not None and len(track.downbeats) > 0
     assert track.beats is not None and len(track.beats) > 0
 
-    for letter, t in prop.positions.items():
-        assert _on_downbeat(t, track.downbeats), (
-            f"{letter}={t:.3f}s not on a tracked downbeat"
-        )
+    _check_cues_on_downbeats(track, prop)
 
     _check_ordering(prop.positions)
 
@@ -167,32 +190,36 @@ def test_ml_bass_analyze_real_track(track_path: str):
             )
 
 
+def _raveform_prereqs() -> bool:
+    try:
+        import allin1_mlx  # noqa: F401
+
+        from autohotcue import _raveform
+
+        return _raveform.weights_ready()
+    except Exception:
+        return False
+
+
 @pytest.mark.parametrize("track_path", E2E_TRACKS)
-@pytest.mark.skipif(not _allin1_prereqs(), reason="ml-allin1 prerequisites missing")
-def test_ml_allin1_analyze_real_track(track_path: str):
+@pytest.mark.parametrize("engine", ["ml-allin1", "ml-raveform"])
+def test_all_in_one_engines_on_real_track(engine: str, track_path: str):
+    ready = _allin1_prereqs() if engine == "ml-allin1" else _raveform_prereqs()
+    if not ready:
+        pytest.skip(f"{engine} prerequisites missing")
     if not Path(track_path).is_file():
         pytest.skip(f"missing track: {track_path}")
 
     t0 = time.perf_counter()
-    track, prop = analysis.analyze(track_path, engine="ml-allin1", jobs=1)
-    elapsed = time.perf_counter() - t0
-    print(f"\n{Path(track_path).name}: ml-allin1 analyze() {elapsed:.1f}s")
+    track, prop = analysis.analyze(track_path, engine=engine, jobs=1)
+    print(f"\n{Path(track_path).name}: {engine} analyze() {time.perf_counter() - t0:.1f}s")
 
-    assert track.engine == "ml-allin1"
-    assert track.downbeats is not None and len(track.downbeats) > 0
-    assert track.beats is not None and len(track.beats) > 0
-    assert track.segments is not None and len(track.segments) > 0
-
-    for letter, t in prop.positions.items():
-        assert _on_downbeat(t, track.downbeats), (
-            f"{letter}={t:.3f}s not on a tracked downbeat"
-        )
-
+    assert track.engine == engine
+    assert len(track.downbeats) > 0 and len(track.beats) > 0 and track.segments
+    _check_cues_on_downbeats(track, prop)
     _check_ordering(prop.positions)
-
     if "A" in prop.positions:
         assert prop.positions["A"] <= track.duration_s * 0.25
-
     if "G" in prop.positions:
         assert _beats_after(prop.positions["G"], track.beats) >= 8
 
@@ -236,10 +263,7 @@ def test_ml_songformer_analyze_real_track(monkeypatch):
         assert 0.0 <= seg.end <= track.duration_s
         assert seg.start < seg.end
 
-    for letter, t in prop.positions.items():
-        assert _on_downbeat(t, track.downbeats), (
-            f"{letter}={t:.3f}s not on a tracked downbeat"
-        )
+    _check_cues_on_downbeats(track, prop)
 
     _check_ordering(prop.positions)
 
@@ -321,11 +345,12 @@ def test_apply_verify_roundtrip(tmp_path):
 @pytest.mark.skipif(not library_exists, reason="real djay library not present")
 @pytest.mark.skipif(
     not Path(FINGERPRINT_TRACK).is_file(),
-    reason="fingerprint guard e2e track missing",
+    reason="fingerprint e2e track missing",
 )
-def test_apply_skips_fingerprint_user_data(tmp_path):
-    """Real library record with ADCAudioAlignmentFingerprint must skip apply."""
-    from autohotcue.cli import _Skip, _djay_running, _precheck_one
+def test_apply_retargets_fingerprint_backref(tmp_path):
+    """Writing cues into a real fingerprint record keeps its back-reference right."""
+    from autohotcue import tsaf
+    from autohotcue.cli import _djay_running, _precheck_one, _write_one
 
     if _djay_running():
         pytest.skip("djay Pro is running — quit it before apply e2e")
@@ -338,7 +363,29 @@ def test_apply_skips_fingerprint_user_data(tmp_path):
 
     db = djaydb.DjayDB(str(db_path))
     try:
-        with pytest.raises(_Skip, match="audio alignment fingerprint"):
-            _precheck_one(db, FINGERPRINT_TRACK, Args())
+        key, existing, _ = _precheck_one(db, FINGERPRINT_TRACK, Args())
+        before = existing.root.get("timestampIdentifier")
+        assert isinstance(before, tsaf.Obj)
+        assert before.classname == "ADCAudioAlignmentFingerprint"
+        data = before.get("timestampIdentifierData").value
+        old = existing.root.get("cuePoints")
+        n_cues = 8 if old is None or len(old.items) != 8 else 7
+        track = analysis.TrackAnalysis(
+            bpm=120.0, first_beat_s=0.0, duration_s=300.0, engine="ml-bass"
+        )
+        prop = analysis.CueProposal(
+            positions={p: 8.0 * i for i, p in enumerate("ABCDEFGH"[:n_cues])}
+        )
+        written = _write_one(
+            db, key, existing, track, prop, lambda: None, grid_lock=False, force=True
+        )
+        assert written == n_cues
+        root = tsaf.parse(db.get_raw("mediaItemUserData", key)).root
     finally:
         db.close()
+
+    refs = [v for _, v in root.fields if isinstance(v, tsaf.Ref)]
+    assert len(refs) == 1
+    assert refs[0].target is root.get("timestampIdentifier")
+    assert refs[0].target.get("timestampIdentifierData").value == data
+    assert len(root.get("cuePoints").items) == n_cues

@@ -89,8 +89,8 @@ def _djay_running() -> bool:
     return out.returncode == 0
 
 
-_ENGINE_CHOICES = ("ml-bass", "ml", "ml-librosa", "ml-allin1", "ml-songformer", "legacy")
-_ML_ENGINES = frozenset({"ml", "ml-librosa", "ml-allin1", "ml-songformer", "ml-bass"})
+_ENGINE_CHOICES = tuple(analysis.ENGINES)
+_ML_ENGINES = frozenset(analysis.ENGINES) - {"legacy"}
 
 
 def _is_ml_engine(engine: str) -> bool:
@@ -176,6 +176,7 @@ def cmd_propose(args):
                         None,
                         jobs,
                         args.nudge_beats,
+                        args.pre_drop_bars,
                     ): p
                     for p in paths
                 }
@@ -195,6 +196,7 @@ def cmd_propose(args):
                 items,
                 engine=args.engine,
                 nudge_beats=args.nudge_beats,
+                pre_drop_bars=args.pre_drop_bars,
                 decode_threads=args.decode_threads,
                 dsp_threads=args.dsp_threads,
             )
@@ -221,6 +223,7 @@ def cmd_propose(args):
                         engine=args.engine,
                         jobs=1,
                         nudge_beats=args.nudge_beats,
+                        pre_drop_bars=args.pre_drop_bars,
                     )
                 except Exception as e:
                     if not batch:
@@ -246,6 +249,7 @@ def cmd_viz(args):
         engine=args.engine,
         jobs=1,
         nudge_beats=args.nudge_beats,
+        pre_drop_bars=args.pre_drop_bars,
     )
     viz.render(args.path, track, prop, args.out, title=Path(args.path).stem)
     print("wrote", args.out)
@@ -388,6 +392,7 @@ def _apply_parallel(db, paths, args, ensure_backup, jobs):
                     None,
                     jobs,
                     args.nudge_beats,
+                    args.pre_drop_bars,
                 ): (i, path, key, existing)
                 for i, path, key, existing, bpm in todo
             }
@@ -464,6 +469,7 @@ def cmd_apply(args):
                     todo,
                     engine=args.engine,
                     nudge_beats=args.nudge_beats,
+                    pre_drop_bars=args.pre_drop_bars,
                     decode_threads=args.decode_threads,
                     dsp_threads=args.dsp_threads,
                 )
@@ -506,6 +512,7 @@ def cmd_apply(args):
                         engine=args.engine,
                         jobs=1,
                         nudge_beats=args.nudge_beats,
+                        pre_drop_bars=args.pre_drop_bars,
                     )
                     n = _write_one(
                         db, key, existing, track, prop, ensure_backup,
@@ -580,6 +587,7 @@ def _add_engine_arg(sp):
         default="ml-bass",
         help="analysis engine: ml-bass (kick-band events + phrase snapping), "
         "ml/ml-librosa (librosa structure), ml-allin1 (all-in-one-mlx structure), "
+        "ml-raveform (all-in-one retrained on EDM section labels), "
         "ml-songformer (SongFormer structure, CPU), legacy (default: ml-bass)",
     )
 
@@ -591,6 +599,23 @@ def _add_nudge_arg(sp):
         default=0.0,
         help="shift the fitted grid by N beats (use for single tracks where "
         "the downbeat phase is audibly off)",
+    )
+
+
+def _bar_count(text: str) -> int:
+    n = int(text)
+    if n < 0:
+        raise argparse.ArgumentTypeError("must be 0 or more")
+    return n
+
+
+def _add_pre_drop_arg(sp):
+    sp.add_argument(
+        "--pre-drop-bars",
+        type=_bar_count,
+        default=analysis.PRE_DROP_BARS,
+        metavar="N",
+        help=f"put pad C N bars before the drop (default: {analysis.PRE_DROP_BARS}; 0 to turn off)",
     )
 
 
@@ -630,6 +655,7 @@ def main(argv=None):
     sp.add_argument("-j", "--jobs", type=int, default=1, help=jobs_help)
     _add_engine_arg(sp)
     _add_nudge_arg(sp)
+    _add_pre_drop_arg(sp)
     _add_pipeline_args(sp)
 
     sp = sub.add_parser("verify")
@@ -643,6 +669,7 @@ def main(argv=None):
     sp.add_argument("--bpm", type=float, default=None)
     _add_engine_arg(sp)
     _add_nudge_arg(sp)
+    _add_pre_drop_arg(sp)
 
     sp = sub.add_parser("apply")
     sp.add_argument("path", help="audio file, or directory to scan recursively")
@@ -658,6 +685,7 @@ def main(argv=None):
     sp.add_argument("-j", "--jobs", type=int, default=1, help=jobs_help)
     _add_engine_arg(sp)
     _add_nudge_arg(sp)
+    _add_pre_drop_arg(sp)
     _add_pipeline_args(sp)
 
     sp = sub.add_parser("bench")

@@ -201,6 +201,10 @@ def segment_structure(
         from autohotcue._allin1 import segment_structure_allin1
 
         return segment_structure_allin1(path, y, sr, beat)
+    if structure_backend == "raveform":
+        from autohotcue._raveform import segment_structure_raveform
+
+        return segment_structure_raveform(path, y, sr, beat)
     if structure_backend == "songformer":
         from autohotcue._songformer import segment_structure_songformer
 

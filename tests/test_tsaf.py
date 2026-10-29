@@ -39,8 +39,8 @@ def test_roundtrip_entire_library():
 
 @pytest.mark.skipif(not LIB.exists(), reason="no djay library on this machine")
 def test_backrefs_follow_their_target_through_cue_edits():
-    """Every container back-reference djay wrote must still name the same
-    object after apply-style edits that add containers ahead of it."""
+    """Back-references in the real library still point at the same object after
+    apply-style edits."""
     checked = 0
     for coll, key, buf in _blobs():
         if coll != "mediaItemUserData":
@@ -80,8 +80,10 @@ def _shared_date_doc():
 
 
 def test_backref_index_counts_in_completion_order():
-    """djay numbers containers as they finish: the title object is 0 and the
-    date 1, so modifiedDate is written as 0x02 0x01 (a real mediaItems record)."""
+    """djay numbers containers as they finish, so here the date is number 1.
+
+    Same bytes as a real mediaItems record.
+    """
     doc, date = _shared_date_doc()
     blob = tsaf.serialize(doc)
     assert b"\x02\x01\x08modifiedDate\x00" in blob
@@ -90,17 +92,16 @@ def test_backref_index_counts_in_completion_order():
     assert tsaf.serialize(rt) == blob
 
 
-def test_backref_to_object_outside_the_tree_refuses():
-    root = tsaf.Obj("X")
-    root.fields = [("gone", tsaf.Ref(tsaf.Obj("Detached")))]
-    with pytest.raises(ValueError):
-        tsaf.serialize(tsaf.Document((3, 3), root))
+_SHARED = tsaf.Obj("Shared")
 
 
-def test_container_written_twice_refuses():
-    shared = tsaf.Obj("Shared")
+@pytest.mark.parametrize("fields", [
+    pytest.param([("gone", tsaf.Ref(tsaf.Obj("Detached")))], id="target-not-in-tree"),
+    pytest.param([("a", _SHARED), ("b", _SHARED)], id="written-twice"),
+])
+def test_serialize_refuses_broken_sharing(fields):
     root = tsaf.Obj("X")
-    root.fields = [("a", shared), ("b", shared)]
+    root.fields = fields
     with pytest.raises(ValueError):
         tsaf.serialize(tsaf.Document((3, 3), root))
 

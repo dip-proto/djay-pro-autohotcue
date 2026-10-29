@@ -46,16 +46,16 @@ anonymous. The header container count tallies objects, arrays, sets, NSDate
 (f64) and NSData values; URLs, strings and primitive scalars do not count.
 Verified exact across an entire real library (38,385 blobs).
 
-A shared object is written once, and later fields point at it with tag 0x02.
-The index counts the same containers as the header, numbered in completion
-order (children before their parent).
-djay uses it for the user-data ``timestampIdentifier`` field, which points at
-the audio-alignment fingerprint, and for a ``modifiedDate`` equal to
-``addedDate``.
-The parser resolves it to a ``Ref`` holding the target node, and the
-serializer recomputes the index.
-Copying the raw index after an edit that adds or removes containers ahead of
-the target makes djay read the wrong object and crash.
+Tag 0x02 points back to a container written earlier in the blob.
+Its index counts the same containers as the header, in the order they finish
+(children before their parent).
+djay uses it for the fingerprint in user data, and for a modifiedDate equal to
+addedDate.
+
+It is parsed into a ``Ref`` to the target, and the serializer recomputes the
+index.
+Keeping the old number after an edit that adds containers before the target
+points djay at the wrong object, and djay crashes.
 """
 from __future__ import annotations
 
@@ -212,7 +212,7 @@ class _Reader:
         self.buf = buf
         self.pos = 0
         self.strings: list[str] = []
-        self.containers: list[object] = []  # completion order, for TAG_OBJ_REF
+        self.containers: list[object] = []  # in the order they finish, for back-references
 
     def align(self, n: int):
         while self.pos % n:
@@ -352,28 +352,18 @@ def parse(buf: bytes) -> Document:
         raise ParseError(f"trailing bytes at {r.pos}/{len(buf)}")
     if len(r.strings) != nstrings:
         raise ParseError(f"string count mismatch: header {nstrings}, got {len(r.strings)}")
-    if _count_containers(root) != ncontainers:
+    if len(r.containers) != ncontainers:
         raise ParseError(
-            f"container count mismatch: header {ncontainers}, got {_count_containers(root)}"
+            f"container count mismatch: header {ncontainers}, got {len(r.containers)}"
         )
     return Document((v1, v2), root)
-
-
-def _count_containers(node) -> int:
-    if isinstance(node, Obj):
-        return 1 + sum(_count_containers(v) for _, v in node.fields)
-    if isinstance(node, Arr):
-        return 1 + sum(_count_containers(v) for v in node.items)
-    if isinstance(node, (Data, F64)):
-        return 1
-    return 0
 
 
 class _Writer:
     def __init__(self):
         self.out = bytearray()
         self.strings: dict[str, int] = {}
-        self.containers: dict[int, int] = {}  # id(node) -> completion index
+        self.containers: dict[int, int] = {}  # id(node) -> position, for back-references
 
     def align(self, n: int):
         while len(self.out) % n:
@@ -475,8 +465,9 @@ def serialize(doc: Document) -> bytes:
     # Header placeholder; counts patched after body is written.
     w.out += MAGIC
     w.out += struct.pack("<HH", *doc.version)
-    w.out += struct.pack("<Q", _count_containers(doc.root))
+    w.out += struct.pack("<Q", 0)
     w.out += struct.pack("<I", 0)
     w.value(doc.root)
+    struct.pack_into("<Q", w.out, 8, len(w.containers))
     struct.pack_into("<I", w.out, 16, len(w.strings))
     return bytes(w.out)

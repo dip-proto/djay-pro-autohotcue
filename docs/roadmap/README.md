@@ -8,7 +8,7 @@ One self-contained brief per workstream, written to be executed independently
 | 01 | [Ground-truth bench labels](01-ground-truth-bench-labels.md) | nothing — **do first** | S (mostly user labeling time) |
 | 02 | [Placement engine redesign](02-placement-engine-redesign.md) | 01 | L — the headline item |
 | 03 | [SongFormer engine bench](03-songformer-bench.md) | 01 | S |
-| 04 | [Fingerprint pairing reverse-engineering](04-fingerprint-pairing-re.md) | solved; real djay load check left | M |
+| 04 | [Fingerprint pairing reverse-engineering](04-fingerprint-pairing-re.md) | solved, except a check in djay | M |
 | 05 | [Splice gate: sub-60s blind spot](05-splice-gate-sub60s.md) | nothing (independent) | S |
 | 06 | [Half-time parity: resolve instead of refuse](06-half-time-parity-kick-evidence.md) | nothing; nicer after 01 | S |
 | 07 | [SongFormer SDPA/flash memory fix](07-songformer-flash-memory.md) | nothing — **off-machine only** (≥64 GB box) | M |

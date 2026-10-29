@@ -15,6 +15,14 @@ def _snap(beat: BeatAnalysis, t: float) -> float:
     return beat.nearest_downbeat(t)
 
 
+def _first_beat(beat: BeatAnalysis) -> float:
+    if len(beat.downbeats) > 0:
+        return _snap(beat, float(beat.downbeats[0]))
+    if len(beat.beats) > 0:
+        return _snap(beat, float(beat.beats[0]))
+    return 0.0
+
+
 def _beats_after(t: float, beats: np.ndarray) -> int:
     import numpy as np
 
@@ -222,12 +230,7 @@ def propose_cues(
         if ratio > 0.02:
             p.notes.append(f"djay says {djay_bpm:.1f}, tracked {beat.bpm:.1f}")
 
-    if len(beat.downbeats) > 0:
-        a = _snap(beat, float(beat.downbeats[0]))
-    elif len(beat.beats) > 0:
-        a = _snap(beat, float(beat.beats[0]))
-    else:
-        a = 0.0
+    a = _first_beat(beat)
     p.positions["A"] = a
 
     if len(beat.downbeats) < 8 or len(segments) < 2:

@@ -18,6 +18,8 @@ audio → **beat_this** beat/downbeat tracking → `gridlock` straight-grid fit 
 engines segment by song form instead: `--engine ml`/`ml-librosa` use librosa
 Laplacian segmentation + the pure cue policy, `--engine ml-allin1` swaps structure
 for **all-in-one-mlx** (Apple Silicon; `uv sync --extra allin1`),
+`--engine ml-raveform` runs the same model trained on **Raveform** dance tracks,
+which labels drops, breakdowns and buildups (same extra; weights downloaded on first use),
 `--engine ml-songformer` swaps structure for **SongFormer** (CPU by default;
 `uv sync --extra songformer`). A legacy band-energy engine remains behind
 `--engine legacy`.
@@ -28,10 +30,12 @@ src/autohotcue/
     djaydb.py    # MediaLibrary.db (SQLite/YapDatabase) reader/writer, backups, cue builder
     backends.py  # beat_this + librosa / allin1 / songformer structure backends
     _allin1.py   # optional all-in-one-mlx structure (ml-allin1 engine)
+    _raveform.py # optional Raveform-trained all-in-one structure (ml-raveform engine)
     _songformer.py  # optional SongFormer structure (ml-songformer engine)
     gridlock.py  # pure straight-grid fit + cue snapping (beat/downbeat -> lattice)
     bassline.py  # pure kick-band bass events + phrase snapping (ml-bass policy)
     cuepolicy.py # pure structure-based cue-placement policy (no audio, no I/O)
+    ravepolicy.py # pure cue policy for Raveform section labels (ml-raveform)
     analysis.py  # decode, analyze() dispatcher, legacy grid path
     bench.py     # ground-truth eval harness (hit-rate, MAE, runtime)
     viz.py       # waveform + segment/bass spans + downbeat ticks + cue-map PNG
@@ -41,6 +45,8 @@ tests/
     test_gridlock.py # straight-grid fit, snapping, beatGridEdits encoding
     test_bassline.py # ml-bass kick-band events + phrase snapping + slot rules
     test_cuepolicy.py
+    test_predrop.py  # pad C placed N bars before the drop
+    test_raveform.py # ml-raveform weights, section naming and cues
     test_backends.py
     test_bench.py
     test_e2e.py      # real-track integration (skipped when paths missing)
@@ -56,8 +62,8 @@ downloads beat_this model checkpoints (one-time network).
 - Install deps + create venv: `uv sync`
 - Requires `ffmpeg` on `PATH` (`ffmpeg -version`); install via Homebrew: `brew install ffmpeg`
 - Python is pinned in `.python-version` (3.14.10); `uv` provisions it.
-  3.15 is not usable yet because PyTorch publishes no cp315 wheels, and every
-  engine except `legacy` needs torch through beat_this.
+  Python 3.15 doesn't work yet: PyTorch has no build for it, and every engine
+  except `legacy` needs it.
 
 ## Development workflow
 
@@ -69,6 +75,7 @@ uv run autohotcue propose "/path/to/track.opus" --engine ml         # librosa st
 uv run autohotcue propose "/path/to/track.opus" --engine ml-allin1  # all-in-one structure
 uv run autohotcue propose "/path/to/track.opus" --engine ml-songformer  # SongFormer structure
 uv run autohotcue propose "/path/to/track.opus" --nudge-beats 1     # shift grid anchor +1 beat
+uv run autohotcue propose "/path/to/track.opus" --pre-drop-bars 16  # pad C 16 bars before the drop (0 = off)
 uv run autohotcue propose "/path/to/track.opus" --engine legacy
 uv run autohotcue viz "/path/to/track.opus" map.png          # segments + downbeat ticks
 uv run autohotcue verify "/path/to/track.opus"               # read back cues djay has stored
@@ -76,10 +83,12 @@ uv run autohotcue apply "/path/to/track.opus"                # WRITE cues into d
 uv run autohotcue bench truth.json --engines ml,ml-allin1,legacy -j 4
 ```
 
-`--engine {ml-bass,ml,ml-librosa,ml-allin1,ml-songformer,legacy}` (default `ml-bass`).
+`--engine {ml-bass,ml,ml-librosa,ml-allin1,ml-raveform,ml-songformer,legacy}` (default `ml-bass`).
 `ml-bass` (the default) uses kick-band bass events + 16/32-bar phrase snapping on the
 grid-locked lattice; `ml` / `ml-librosa` use librosa Laplacian structure; `ml-allin1`
-uses all-in-one-mlx (optional extra; see `docs/allin1-backend.md`); `ml-songformer` uses
+uses all-in-one-mlx (optional extra; see `docs/allin1-backend.md`); `ml-raveform` uses the
+all-in-one model trained on dance music, whose label order was worked out by hand
+(read `docs/raveform-backend.md` before touching `RAVEFORM_LABELS`); `ml-songformer` uses
 SongFormer (optional extra; see `docs/songformer-backend.md`; CPU by default). djay's BPM
 is cross-checked only under ml engines; placement uses beat_this downbeats. `apply` still
 writes absolute seconds.
@@ -172,9 +181,9 @@ needed. No CI is configured yet; if you add one, wire `uv sync` + `uv run pytest
   other devices. Treat single-machine as the supported case.
 - The TSAF container-count header counts objects, arrays/sets, NSData and NSDate
   (f64) but **not** URLs/strings/scalars — see the module docstring in `tsaf.py`.
-- Tag `0x02` is a back-reference to an earlier container, by index in completion
-  order. It is modeled as `tsaf.Ref` and the serializer recomputes the index.
-  Never store or copy that index yourself: an edit that adds containers ahead of
-  the target (more cues, a new grid object) would silently point it at the wrong
-  object, and djay crashes on load. This is what corrupted fingerprint records
-  twice (`docs/audio-alignment-fingerprint.md`).
+- Tag `0x02` points back to an object written earlier in the same record.
+  `tsaf.Ref` handles it, and the writer works out the position again.
+  Never keep that position yourself: once an edit adds cues or a grid object
+  before the target, it points at the wrong object and djay crashes.
+  This is what broke fingerprint records twice
+  (`docs/audio-alignment-fingerprint.md`).

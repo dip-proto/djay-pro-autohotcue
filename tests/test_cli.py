@@ -187,9 +187,7 @@ def test_bpm_for_still_raises_when_required(tmp_path):
 
 
 def _fingerprint_user_doc(n_cues: int) -> tsaf.Document:
-    """User-data record laid out the way djay writes it when it has computed an
-    audio-alignment fingerprint: the object sits under ``timestampIdentifier``
-    and a trailing field of the same name points back at it."""
+    """A user-data record with a fingerprint, laid out the way djay writes it."""
     fp = tsaf.Obj("ADCAudioAlignmentFingerprint")
     fp.fields = [("timestampIdentifierData", tsaf.Data(b"\x78\x9c\x01\x02\x03")),
                  ("version", tsaf.Marker(tsaf.TAG_M2E))]
@@ -207,24 +205,10 @@ def _fingerprint_user_doc(n_cues: int) -> tsaf.Document:
     return tsaf.Document((3, 3), root)
 
 
-def test_precheck_allows_audio_alignment_fingerprint(tmp_path):
-    """A djay audio-alignment fingerprint must not block the edit."""
-    track = tmp_path / "track.opus"
-    track.write_bytes(b"")
-    doc = _fingerprint_user_doc(0)
-    db = djaydb.DjayDB(_library_db_with_user_data(tmp_path, str(track), doc))
-    try:
-        key, existing, bpm = _precheck_one(db, str(track), _ApplyArgs())
-        assert key == "track1"
-    finally:
-        db.close()
-
-
 def test_write_keeps_fingerprint_backref_when_cue_count_changes(tmp_path, monkeypatch):
-    """Replacing 5 cues with 6 shifts the fingerprint by one container.
+    """Going from 5 to 6 cues moves the fingerprint, and the back-reference must follow.
 
-    A copied index then lands on the fingerprint's own NSData, which is the
-    exact record that made djay crash; the written index must follow the object.
+    With the old copied index, this is the record that made djay crash.
     """
     monkeypatch.setattr(cli, "_djay_running", lambda: False)
     track = tmp_path / "track.opus"
