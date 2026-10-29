@@ -17,7 +17,7 @@ boundary (4 or 8 bytes) relative to the file start with zero padding.
 
 Tags:
     0x00  end-of-object marker
-    0x02  integer, inline u8 payload (variant tag)
+    0x02  container back-reference (u8 index, see below)
     0x05  string back-reference (u8 index into intern table)
     0x08  inline string: NUL-terminated UTF-8, appended to intern table
     0x0a  array (u32 count, 4-aligned) -- mutable variant
@@ -45,6 +45,17 @@ optional: if the token after a value is not a string token, the field is
 anonymous. The header container count tallies objects, arrays, sets, NSDate
 (f64) and NSData values; URLs, strings and primitive scalars do not count.
 Verified exact across an entire real library (38,385 blobs).
+
+A shared object is written once, and later fields point at it with tag 0x02.
+The index counts the same containers as the header, numbered in completion
+order (children before their parent).
+djay uses it for the user-data ``timestampIdentifier`` field, which points at
+the audio-alignment fingerprint, and for a ``modifiedDate`` equal to
+``addedDate``.
+The parser resolves it to a ``Ref`` holding the target node, and the
+serializer recomputes the index.
+Copying the raw index after an edit that adds or removes containers ahead of
+the target makes djay read the wrong object and crash.
 """
 from __future__ import annotations
 
@@ -55,7 +66,7 @@ from dataclasses import dataclass, field
 MAGIC = b"TSAF"
 
 TAG_END = 0x00
-TAG_INT8_V2 = 0x02
+TAG_OBJ_REF = 0x02
 TAG_REF = 0x05
 TAG_STR = 0x08
 TAG_ARRAY_A = 0x0A
@@ -158,7 +169,7 @@ class F64:
 
 @dataclass
 class Int:
-    tag: int  # TAG_INT8, TAG_INT8_V2, TAG_INT16 or TAG_INT32
+    tag: int  # TAG_INT8, TAG_INT16 or TAG_INT32
     value: int
 
     def __repr__(self):
@@ -173,6 +184,17 @@ class Marker:
 
     def __repr__(self):
         return f"Marker[{self.tag:#04x}]"
+
+
+@dataclass(eq=False)
+class Ref:
+    """Back-reference to a container written earlier in the same blob."""
+
+    target: object
+
+    def __repr__(self):
+        t = self.target
+        return f"Ref({t.classname if isinstance(t, Obj) else type(t).__name__})"
 
 
 @dataclass
@@ -190,6 +212,7 @@ class _Reader:
         self.buf = buf
         self.pos = 0
         self.strings: list[str] = []
+        self.containers: list[object] = []  # completion order, for TAG_OBJ_REF
 
     def align(self, n: int):
         while self.pos % n:
@@ -244,6 +267,12 @@ class _Reader:
         raise ParseError(f"expected string token, got tag {tag:#04x} at {self.pos - 1}")
 
     def value(self, tag: int):
+        node = self._value(tag)
+        if isinstance(node, (Obj, Arr, Data, F64)):
+            self.containers.append(node)
+        return node
+
+    def _value(self, tag: int):
         if tag == TAG_OBJ:
             obj = Obj(self.string_token())
             while True:
@@ -262,6 +291,11 @@ class _Reader:
             for _ in range(n):
                 arr.items.append(self.value(self.u8()))
             return arr
+        if tag == TAG_OBJ_REF:
+            idx = self.u8()
+            if idx >= len(self.containers):
+                raise ParseError(f"container backref {idx} not yet defined at {self.pos - 2}")
+            return Ref(self.containers[idx])
         if tag == TAG_STR:
             s = self.cstr()
             self.strings.append(s)
@@ -277,7 +311,7 @@ class _Reader:
         if tag == TAG_F64:
             self.align(8)
             return F64(self.raw(8))
-        if tag in (TAG_INT8, TAG_INT8_V2):
+        if tag == TAG_INT8:
             return Int(tag, self.u8())
         if tag == TAG_INT16:
             self.align(2)
@@ -339,6 +373,7 @@ class _Writer:
     def __init__(self):
         self.out = bytearray()
         self.strings: dict[str, int] = {}
+        self.containers: dict[int, int] = {}  # id(node) -> completion index
 
     def align(self, n: int):
         while len(self.out) % n:
@@ -366,7 +401,22 @@ class _Writer:
             self.u8(idx)
 
     def value(self, node):
-        if isinstance(node, Obj):
+        self._value(node)
+        if isinstance(node, (Obj, Arr, Data, F64)):
+            if id(node) in self.containers:
+                raise ValueError("container appears twice in the tree; share it with a Ref")
+            self.containers[id(node)] = len(self.containers)
+
+    def _value(self, node):
+        if isinstance(node, Ref):
+            idx = self.containers.get(id(node.target))
+            if idx is None:
+                raise ValueError("Ref target is not written earlier in this blob")
+            if idx > 0xFF:
+                raise ValueError(f"container backref index {idx} exceeds u8")
+            self.u8(TAG_OBJ_REF)
+            self.u8(idx)
+        elif isinstance(node, Obj):
             self.u8(TAG_OBJ)
             self.string_token(node.classname)
             for name, val in node.fields:

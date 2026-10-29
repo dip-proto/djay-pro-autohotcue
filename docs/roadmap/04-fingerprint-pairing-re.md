@@ -1,5 +1,15 @@
 # 04 — Fingerprint pairing semantics: reverse-engineer and lift the guard
 
+**Status (October 2026): solved, one check left.**
+The trailing `timestampIdentifier` is a container back-reference (tag `0x02`), now
+modeled as `tsaf.Ref` and re-targeted on write; the guard is lifted for the
+fingerprint class.
+djay's own re-save of two records we had edited round-trips byte-exact under the new
+codec, back-reference index included.
+The remaining acceptance item is a real djay load of a fingerprint record edited by
+`apply`.
+Details in `docs/audio-alignment-fingerprint.md`, section "Resolution".
+
 **Goal:** understand how djay actually pairs field names to values in
 `mediaItemUserData` records that contain an `ADCAudioAlignmentFingerprint`
 object, so the edit guard can be lifted and the ~72 affected tracks (2% of the

@@ -197,7 +197,7 @@ def test_get_separator_batch_size_default_and_override(monkeypatch):
     monkeypatch.delenv("AUTOHOTCUE_DEMUCS_BATCH", raising=False)
     monkeypatch.setattr(mod, "_separator", None)
     mod._get_separator()
-    assert inits[-1] == {"model": "htdemucs", "progress": False, "batch_size": 1}
+    assert inits[-1] == {"model": "htdemucs", "progress": False, "batch_size": 1, "seed": 0}
 
     monkeypatch.setenv("AUTOHOTCUE_DEMUCS_BATCH", "8")
     monkeypatch.setattr(mod, "_separator", None)

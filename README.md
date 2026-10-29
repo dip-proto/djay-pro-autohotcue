@@ -87,7 +87,7 @@ track whose downbeat phase is audibly off.
 
 ## Install
 
-Requires **Python 3.11+** (pinned to 3.13.3 via `.python-version`),
+Requires **Python 3.11+** (pinned to 3.14.10 via `.python-version`),
 [uv](https://docs.astral.sh/uv/), and **`ffmpeg`** on `PATH`.
 
 ```bash

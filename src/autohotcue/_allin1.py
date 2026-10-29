@@ -18,6 +18,7 @@ ALLIN1_LABELS = frozenset(
 _EDGE_LABEL_MAP = {"start": "intro", "end": "outro"}
 _WEIGHTS_MARKER = "harmonix-fold0_mlx.npz"
 _MODEL_NAME = "harmonix-fold0"
+_DEMUCS_SEED = 0
 
 _separator = None
 _model = None
@@ -150,7 +151,12 @@ def _get_separator():
         # equal-or-faster than upstream's default 8 at ~2.7x lower MLX peak
         # (docs/allin1-performance.md); larger GPUs may prefer 8.
         batch = int(os.environ.get("AUTOHOTCUE_DEMUCS_BATCH", "1"))
-        _separator = Separator(model="htdemucs", progress=False, batch_size=batch)
+        # demucs' shift trick draws a random offset on every call. Unseeded, the
+        # same track separates differently on each run and all-in-one moves
+        # section boundaries by whole phrases, so cues would not be reproducible.
+        _separator = Separator(
+            model="htdemucs", progress=False, batch_size=batch, seed=_DEMUCS_SEED
+        )
     return _separator
 
 

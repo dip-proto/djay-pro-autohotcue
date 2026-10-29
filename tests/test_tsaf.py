@@ -37,6 +37,83 @@ def test_roundtrip_entire_library():
     assert not failures, f"{len(failures)} blobs failed round-trip: {failures[:5]}"
 
 
+@pytest.mark.skipif(not LIB.exists(), reason="no djay library on this machine")
+def test_backrefs_follow_their_target_through_cue_edits():
+    """Every container back-reference djay wrote must still name the same
+    object after apply-style edits that add containers ahead of it."""
+    checked = 0
+    for coll, key, buf in _blobs():
+        if coll != "mediaItemUserData":
+            continue
+        root = tsaf.parse(buf).root
+        refs = [v for _, v in root.fields if isinstance(v, tsaf.Ref)]
+        if not refs:
+            continue
+        before = [(r.target.classname, r.target.get("timestampIdentifierData").value) for r in refs]
+        for n in (1, 8):
+            doc = tsaf.parse(buf)
+            cues = [{"time": 4.0 * i, "number": i, "comment": None} for i in range(n)]
+            doc.root.set("cuePoints", tsaf.Arr(tsaf.TAG_ARRAY_A, djaydb.build_cue_objects(cues)))
+            doc.root.set("beatGridEdits", djaydb.build_beat_grid_edits(0.5))
+            out = tsaf.parse(tsaf.serialize(doc)).root
+            after = [
+                (r.target.classname, r.target.get("timestampIdentifierData").value)
+                for _, r in out.fields
+                if isinstance(r, tsaf.Ref)
+            ]
+            assert after == before, f"{key}: backref moved off its target with {n} cues"
+        checked += 1
+    if not checked:
+        pytest.skip("no fingerprint records with a back-reference in this library")
+
+
+def _shared_date_doc():
+    date = tsaf.F64.of(814702834.6)
+    root = tsaf.Obj("ADCMediaItem")
+    root.fields = [
+        ("uuid", "k"),
+        ("titleID", tsaf.Obj("ADCMediaItemTitleID")),
+        ("addedDate", date),
+        ("modifiedDate", tsaf.Ref(date)),
+    ]
+    return tsaf.Document((3, 3), root), date
+
+
+def test_backref_index_counts_in_completion_order():
+    """djay numbers containers as they finish: the title object is 0 and the
+    date 1, so modifiedDate is written as 0x02 0x01 (a real mediaItems record)."""
+    doc, date = _shared_date_doc()
+    blob = tsaf.serialize(doc)
+    assert b"\x02\x01\x08modifiedDate\x00" in blob
+    rt = tsaf.parse(blob)
+    assert rt.root.get("modifiedDate").target is rt.root.get("addedDate")
+    assert tsaf.serialize(rt) == blob
+
+
+def test_backref_to_object_outside_the_tree_refuses():
+    root = tsaf.Obj("X")
+    root.fields = [("gone", tsaf.Ref(tsaf.Obj("Detached")))]
+    with pytest.raises(ValueError):
+        tsaf.serialize(tsaf.Document((3, 3), root))
+
+
+def test_container_written_twice_refuses():
+    shared = tsaf.Obj("Shared")
+    root = tsaf.Obj("X")
+    root.fields = [("a", shared), ("b", shared)]
+    with pytest.raises(ValueError):
+        tsaf.serialize(tsaf.Document((3, 3), root))
+
+
+def test_backref_to_undefined_container_fails_parse():
+    doc, _ = _shared_date_doc()
+    blob = bytearray(tsaf.serialize(doc))
+    at = blob.index(b"\x02\x01\x08modifiedDate")
+    blob[at + 1] = 9
+    with pytest.raises(tsaf.ParseError):
+        tsaf.parse(bytes(blob))
+
+
 def test_build_user_data_is_wellformed():
     tid = tsaf.Obj("ADCMediaItemTitleID")
     tid.fields = [("uuid", "deadbeef"), ("title", "T"), ("artist", "A"),

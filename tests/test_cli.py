@@ -5,7 +5,7 @@ import sqlite3
 
 import pytest
 
-from autohotcue import djaydb, tsaf
+from autohotcue import analysis, cli, djaydb, tsaf
 from autohotcue.cli import _Skip, _bpm_for, _djay_bpm_for_path, _expand_paths, _precheck_one
 
 
@@ -186,27 +186,75 @@ def test_bpm_for_still_raises_when_required(tmp_path):
         db.close()
 
 
-def test_precheck_skips_unsafe_analysis_objects(tmp_path):
-    """Records with unknown nested Obj types must skip the entire edit."""
-    track = tmp_path / "track.opus"
-    track.write_bytes(b"")
-    tid = _title_id()
+def _fingerprint_user_doc(n_cues: int) -> tsaf.Document:
+    """User-data record laid out the way djay writes it when it has computed an
+    audio-alignment fingerprint: the object sits under ``timestampIdentifier``
+    and a trailing field of the same name points back at it."""
     fp = tsaf.Obj("ADCAudioAlignmentFingerprint")
-    fp.fields = [("payload", tsaf.Data(b"\x00\x01\x02"))]
+    fp.fields = [("timestampIdentifierData", tsaf.Data(b"\x78\x9c\x01\x02\x03")),
+                 ("version", tsaf.Marker(tsaf.TAG_M2E))]
+    cues = [{"time": 8.0 * i, "number": i, "comment": None} for i in range(n_cues)]
     root = tsaf.Obj("ADCMediaItemUserData")
     root.fields = [
         ("uuid", "track1"),
-        ("titleIDs", tsaf.Arr(tsaf.TAG_ARRAY_B, [tid])),
-        ("cuePoints", tsaf.Arr(tsaf.TAG_ARRAY_A, [])),
-        ("audioAlignmentFingerprint", fp),
+        ("userChangedCloudKeys", tsaf.Arr(tsaf.TAG_SET, ["audioAlignmentFingerprint", "cuePoints"])),
+        ("titleIDs", tsaf.Arr(tsaf.TAG_ARRAY_B, [_title_id()])),
+        ("cuePoints", tsaf.Arr(tsaf.TAG_ARRAY_A, djaydb.build_cue_objects(cues))),
+        ("timestampIdentifier", fp),
+        ("playCount", tsaf.Int(tsaf.TAG_INT8, 3)),
+        ("timestampIdentifier", tsaf.Ref(fp)),
     ]
-    doc = tsaf.Document((3, 3), root)
+    return tsaf.Document((3, 3), root)
+
+
+def test_precheck_allows_audio_alignment_fingerprint(tmp_path):
+    """A djay audio-alignment fingerprint must not block the edit."""
+    track = tmp_path / "track.opus"
+    track.write_bytes(b"")
+    doc = _fingerprint_user_doc(0)
     db = djaydb.DjayDB(_library_db_with_user_data(tmp_path, str(track), doc))
     try:
-        with pytest.raises(_Skip, match="audio alignment fingerprint"):
-            _precheck_one(db, str(track), _ApplyArgs())
+        key, existing, bpm = _precheck_one(db, str(track), _ApplyArgs())
+        assert key == "track1"
     finally:
         db.close()
+
+
+def test_write_keeps_fingerprint_backref_when_cue_count_changes(tmp_path, monkeypatch):
+    """Replacing 5 cues with 6 shifts the fingerprint by one container.
+
+    A copied index then lands on the fingerprint's own NSData, which is the
+    exact record that made djay crash; the written index must follow the object.
+    """
+    monkeypatch.setattr(cli, "_djay_running", lambda: False)
+    track = tmp_path / "track.opus"
+    track.write_bytes(b"")
+    original = _fingerprint_user_doc(5)
+    raw_before = tsaf.serialize(original)
+    db = djaydb.DjayDB(_library_db_with_user_data(tmp_path, str(track), original))
+    try:
+        key, existing, _ = _precheck_one(db, str(track), _ApplyArgs())
+        prop = analysis.CueProposal(positions={p: 4.0 * i for i, p in enumerate("ABCDEF")})
+        track_analysis = analysis.TrackAnalysis(
+            bpm=120.0, first_beat_s=0.0, duration_s=200.0, engine="ml-bass"
+        )
+        written = cli._write_one(
+            db, key, existing, track_analysis, prop, lambda: None, grid_lock=False, force=True
+        )
+        assert written == 6
+        raw_after = db.get_raw("mediaItemUserData", key)
+    finally:
+        db.close()
+
+    root = tsaf.parse(raw_after).root
+    assert len(root.get("cuePoints").items) == 6
+    refs = [v for _, v in root.fields if isinstance(v, tsaf.Ref)]
+    assert len(refs) == 1
+    assert refs[0].target is root.get("timestampIdentifier")
+    assert refs[0].target.get("timestampIdentifierData").value == b"\x78\x9c\x01\x02\x03"
+    # Both records end with: 0x02 <index> <name backref> 0x00.
+    assert raw_before[-5] == raw_after[-5] == tsaf.TAG_OBJ_REF
+    assert raw_after[-4] == raw_before[-4] + 1
 
 
 def test_precheck_allows_known_safe_classnames(tmp_path):
@@ -252,19 +300,19 @@ def test_precheck_skips_unknown_obj_inside_array(tmp_path):
     track = tmp_path / "track.opus"
     track.write_bytes(b"")
     tid = _title_id()
-    fp = tsaf.Obj("ADCAudioAlignmentFingerprint")
-    fp.fields = [("payload", tsaf.Data(b"\xab\xcd"))]
+    unknown = tsaf.Obj("ADCSomethingHotcueDoesNotModel")
+    unknown.fields = [("payload", tsaf.Data(b"\xab\xcd"))]
     root = tsaf.Obj("ADCMediaItemUserData")
     root.fields = [
         ("uuid", "track1"),
         ("titleIDs", tsaf.Arr(tsaf.TAG_ARRAY_B, [tid])),
         ("cuePoints", tsaf.Arr(tsaf.TAG_ARRAY_A, [])),
-        ("nestedAnalysis", tsaf.Arr(tsaf.TAG_ARRAY_A, [fp])),
+        ("nestedAnalysis", tsaf.Arr(tsaf.TAG_ARRAY_A, [unknown])),
     ]
     doc = tsaf.Document((3, 3), root)
     db = djaydb.DjayDB(_library_db_with_user_data(tmp_path, str(track), doc))
     try:
-        with pytest.raises(_Skip, match="audio alignment fingerprint"):
+        with pytest.raises(_Skip, match="cannot safely edit"):
             _precheck_one(db, str(track), _ApplyArgs())
     finally:
         db.close()

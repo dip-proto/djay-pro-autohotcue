@@ -2,9 +2,55 @@
 
 Working notes for reverse-engineering djay's audio-alignment fingerprint object and the
 TSAF name↔value pairing semantics around it. Written after the June 2026 corruption
-incident (below). Records containing this object are currently **refused by `apply`**
-(classname allowlist guard in `cli._precheck_one`) — lifting that guard requires
-settling the open questions here.
+incident (below). The pairing problem is now solved; see the next section.
+
+## Resolution (October 2026)
+
+The trailing `timestampIdentifier` field is not an integer.
+Tag `0x02` is a **container back-reference**: a u8 index pointing at an object
+written earlier in the same blob.
+Containers are numbered in completion order (children before their parent), counting
+the same things as the header count (objects, arrays, sets, NSData, NSDate).
+In user data it always points at the fingerprint object; in `mediaItems` djay also uses
+it for a `modifiedDate` equal to `addedDate`.
+
+Evidence, from a library of 1,185 user-data records:
+
+- All 1,159 fingerprint records hold a `0x02` whose index resolves to exactly the
+  `ADCAudioAlignmentFingerprint` container, at indexes from 4 to 13 depending on how
+  many cues and grid objects come before it.
+- The `mediaItems` case only makes sense in completion order: pre-order would point
+  `modifiedDate` at the title object, completion order points it at the NSDate.
+  No other `mediaItems` record stores two identical inline dates, because djay shares
+  the object whenever they are equal.
+
+The old codec parsed the field as a plain `Int` and wrote the stale index back.
+That is enough to explain both incidents:
+
+- **June 2026 (Move).** Going from 6 to 8 cues moved the fingerprint from container 13
+  to 15, and container 13 became the `ADCBeatGridEdits` object.
+  djay called `fingerprintFloatsArray` on it.
+- **October 2026 (Take Control, Your Love).** The guard was lifted on round-trip
+  evidence alone. The first `apply` appended `cuePoints` after the fingerprint, so the
+  index stayed right by luck, and djay re-saved both records in its own field order
+  with `cuePoints` ahead of the fingerprint.
+  The second `apply --force` replaced 5 cues with a different count, and the stale
+  index then landed on the fingerprint's own NSData: djay crashed with
+  `-[_NSInlineData ...]: unrecognized selector` in `yapDatabaseModified:`.
+  Replaying that edit with the old codec reproduces it (5 to 6 cues lands on Data,
+  5 to 7 lands on `ADCBeatGridEdits`).
+
+The fix is in `tsaf.py`: `0x02` parses to a `tsaf.Ref` holding the target node, and the
+serializer recomputes the index from where the target actually lands.
+A reference to an object missing from the tree, or an index past 255, refuses to
+serialize.
+Replaying apply's edit (1 to 8 cues plus a grid object) on every fingerprint record of
+the library keeps every reference on the same fingerprint, byte-identical.
+`ADCAudioAlignmentFingerprint` is in `EDIT_SAFE_OBJ_CLASSNAMES` on that basis.
+
+Still open: a real djay load of an edited fingerprint record (roadmap 04's acceptance
+bar), and what the fingerprint blob itself encodes.
+The ranked hypotheses below are kept for history; the first two were both partly right.
 
 ## What it is (observed)
 
@@ -135,9 +181,13 @@ at least when rewriting. Candidate explanations:
 ## Safety rules in force
 
 - `apply` refuses records whose parsed tree contains any Obj classname outside
-  {user-data root, titleIDs, cue points, ADCBeatGridEdits} — skip, never edit.
+  {user-data root, titleIDs, cue points, ADCBeatGridEdits, ADCAudioAlignmentFingerprint}
+  — skip, never edit.
 - Byte-exact round-trip (`serialize(parse(b)) == b`) is **necessary but not
-  sufficient** for edit safety: it proves reproduction, not that our name↔value
-  pairing matches djay's. Do not weaken the guard based on round-trip evidence alone.
+  sufficient** for edit safety: it proves reproduction, not that our model of the
+  record matches djay's. The stale back-reference round-tripped perfectly while
+  corrupting records twice. Do not widen the guard based on round-trip evidence alone.
+- `tests/test_tsaf.py::test_backrefs_follow_their_target_through_cue_edits` replays
+  apply-style edits on every fingerprint record of the local library. It must pass.
 - Any experiment that writes near a fingerprint record happens on a **copy** of the
   library, and corrupted artifacts get preserved before restoring.

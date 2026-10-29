@@ -46,7 +46,7 @@ tests/
     test_e2e.py      # real-track integration (skipped when paths missing)
 ```
 
-Key tech: Python 3.13 (pinned; `requires-python >=3.11`), [uv](https://docs.astral.sh/uv/)
+Key tech: Python 3.14 (pinned; `requires-python >=3.11`), [uv](https://docs.astral.sh/uv/)
 for env/deps, numpy + librosa + soundfile + matplotlib + **PyTorch** (via
 `beat-this`), and the external `ffmpeg` binary (must be on `PATH`). First run
 downloads beat_this model checkpoints (one-time network).
@@ -55,7 +55,9 @@ downloads beat_this model checkpoints (one-time network).
 
 - Install deps + create venv: `uv sync`
 - Requires `ffmpeg` on `PATH` (`ffmpeg -version`); install via Homebrew: `brew install ffmpeg`
-- Python is pinned in `.python-version` (3.13.3); `uv` provisions it.
+- Python is pinned in `.python-version` (3.14.10); `uv` provisions it.
+  3.15 is not usable yet because PyTorch publishes no cp315 wheels, and every
+  engine except `legacy` needs torch through beat_this.
 
 ## Development workflow
 
@@ -170,3 +172,9 @@ needed. No CI is configured yet; if you add one, wire `uv sync` + `uv run pytest
   other devices. Treat single-machine as the supported case.
 - The TSAF container-count header counts objects, arrays/sets, NSData and NSDate
   (f64) but **not** URLs/strings/scalars — see the module docstring in `tsaf.py`.
+- Tag `0x02` is a back-reference to an earlier container, by index in completion
+  order. It is modeled as `tsaf.Ref` and the serializer recomputes the index.
+  Never store or copy that index yourself: an edit that adds containers ahead of
+  the target (more cues, a new grid object) would silently point it at the wrong
+  object, and djay crashes on load. This is what corrupted fingerprint records
+  twice (`docs/audio-alignment-fingerprint.md`).
