@@ -241,6 +241,31 @@ def test_write_keeps_fingerprint_backref_when_cue_count_changes(tmp_path, monkey
     assert raw_after[-4] == raw_before[-4] + 1
 
 
+def test_write_names_each_cue_after_what_the_engine_found(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "_djay_running", lambda: False)
+    track = tmp_path / "track.opus"
+    track.write_bytes(b"")
+    db = djaydb.DjayDB(_library_db_with_user_data(tmp_path, str(track), _fingerprint_user_doc(2)))
+    try:
+        key, existing, _ = _precheck_one(db, str(track), _ApplyArgs())
+        prop = analysis.CueProposal(
+            positions={"B": 30.0, "E": 90.0, "G": 60.0},
+            labels={"B": "Drop", "E": "Loop", "G": "Drop 2"},
+        )
+        track_analysis = analysis.TrackAnalysis(
+            bpm=120.0, first_beat_s=0.0, duration_s=200.0, engine="ml-stems"
+        )
+        cli._write_one(
+            db, key, existing, track_analysis, prop, lambda: None, grid_lock=False, force=True
+        )
+        cues = db.get("mediaItemUserData", key).root.get("cuePoints").items
+    finally:
+        db.close()
+    assert [(c.get("comment"), c.get("time").value) for c in cues] == [
+        ("Drop", 30.0), ("Loop", 90.0), ("Drop 2", 60.0),
+    ]
+
+
 def test_precheck_allows_known_safe_classnames(tmp_path):
     """Known-safe nested Obj classnames must pass the edit guard."""
     track = tmp_path / "track.opus"

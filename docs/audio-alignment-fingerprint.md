@@ -73,7 +73,7 @@ our parser reports it:
 [('beatGridEdits')       -> Obj ADCBeatGridEdits]   # when present
 ('timestampIdentifier')  -> Obj ADCAudioAlignmentFingerprint
     ('timestampIdentifierData') -> Data, ~4.7 KB
-    ('version')                 -> Marker 0x2e (= int 1)
+    ('version')                 -> Marker 0x2e (= int 0)
 ('playCount')            -> Int | Marker
 [('manualGain')          -> F32]
 ('timestampIdentifier')  -> Int        # duplicate root field name!

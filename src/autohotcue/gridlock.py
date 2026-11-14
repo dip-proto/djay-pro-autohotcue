@@ -25,6 +25,7 @@ PARITY_MIN_CLUSTER = 4
 MIN_KEPT_BEATS = 32
 MIN_KEPT_DOWNBEATS = 8
 MIN_DURATION_S = 30.0
+START_SLACK_S = 0.05
 KICK_BAND_LO_HZ = 30.0
 KICK_BAND_HI_HZ = 150.0
 
@@ -534,7 +535,8 @@ def fit_grid(
 
 
 def _nearest_nonnegative_lattice(t: float, anchor: float, beat_period: float) -> float:
-    n_min = int(np.ceil(-anchor / beat_period - 1e-12)) if anchor > 0 else 0
+    # A beat that falls a hair before the audio is the start of the file.
+    n_min = int(np.ceil((-anchor - START_SLACK_S) / beat_period - 1e-12)) if anchor > 0 else 0
     rel = (t - anchor) / beat_period
     # Ties go to the earlier beat, so cues moved by whole beats snap the same way.
     candidates = sorted({
@@ -542,7 +544,7 @@ def _nearest_nonnegative_lattice(t: float, anchor: float, beat_period: float) ->
         max(n_min, int(np.ceil(rel - 1e-12))),
     })
     best_n = min(candidates, key=lambda k: abs(t - (anchor + k * beat_period)))
-    return anchor + best_n * beat_period
+    return max(anchor + best_n * beat_period, 0.0)
 
 
 def snap_cues(positions: dict[str, float], fit: GridFit) -> dict[str, float]:

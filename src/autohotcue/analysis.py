@@ -19,6 +19,13 @@ import numpy as np
 SR = 44100
 HOP = 512
 PRE_DROP_BARS = 8
+DEFAULT_ENGINE = "ml-stems"
+
+# The djcues layout, which every engine but ml-stems places.
+DJCUES_LABELS = {
+    "A": "First Beat", "B": "Loop In", "C": "Vocal / Buildup", "D": "Drop",
+    "E": "Breakdown", "F": "Special", "G": "Outro", "H": "Loop Out",
+}
 
 
 @dataclass
@@ -43,6 +50,10 @@ class GridAnalysis:
 class CueProposal:
     positions: dict[str, float] = field(default_factory=dict)  # pad letter -> seconds
     notes: list[str] = field(default_factory=list)
+    labels: dict[str, str] = field(default_factory=dict)  # pad letter -> name, if not djcues
+
+    def label(self, pad: str) -> str:
+        return self.labels.get(pad, DJCUES_LABELS[pad])
 
 
 @dataclass
@@ -59,6 +70,7 @@ class TrackAnalysis:
     djay_bpm: float | None = None
     grid_fit: object | None = None  # gridlock.GridFit when ml engine
     bass: object | None = None  # bassline.BassAnalysis when ml-bass engine
+    bars: object | None = None  # stempolicy.BarFeatures when ml-stems engine
 
 
 def decode(path: str, sr: int = SR) -> np.ndarray:
@@ -281,6 +293,7 @@ def propose_cues_legacy(
 
 # Engine -> structure backend. ml-bass and legacy don't segment the track.
 ENGINES = {
+    "ml-stems": "stems",
     "ml-bass": None,
     "ml": "librosa",
     "ml-librosa": "librosa",
@@ -304,7 +317,7 @@ def normalize_engine(engine: str) -> tuple[str, str | None]:
 def effective_parallel_jobs(engine: str, jobs: int) -> int:
     """Engines with a big model run in a single process."""
     _, structure_backend = normalize_engine(engine)
-    if structure_backend in ("allin1", "raveform", "songformer"):
+    if structure_backend in ("stems", "allin1", "raveform", "songformer"):
         return 1
     return jobs
 
@@ -333,7 +346,7 @@ def _resolve_device(device: str | None, jobs: int = 1) -> str:
 def analyze(
     path: str,
     known_bpm: float | None = None,
-    engine: str = "ml-bass",
+    engine: str = DEFAULT_ENGINE,
     device: str | None = None,
     jobs: int = 1,
     nudge_beats: float = 0.0,
@@ -418,7 +431,7 @@ def cues_from_beats(
     path: str,
     beat,
     known_bpm: float | None = None,
-    engine: str = "ml-bass",
+    engine: str = DEFAULT_ENGINE,
     nudge_beats: float = 0.0,
     pre_drop_bars: int = PRE_DROP_BARS,
 ) -> tuple[TrackAnalysis, CueProposal]:
@@ -439,8 +452,18 @@ def cues_from_beats(
         float(beat.beats[0]) if len(beat.beats) else 0.0
     )
 
-    segments = bass_analysis = None
-    if track_engine == "ml-bass":
+    segments = bass_analysis = bars = None
+    if track_engine == "ml-stems":
+        from autohotcue._stems import analyze_stems
+        from autohotcue.backends import bpm_octave_ratio
+        from autohotcue.stempolicy import propose_cues_stems
+
+        bars, structure = analyze_stems(path, y, SR, beat, grid_fit)
+        prop = propose_cues_stems(bars, structure.segments)
+        segments = list(structure.segments)
+        if known_bpm is not None and bpm_octave_ratio(beat.bpm, known_bpm) > 0.02:
+            prop.notes.append(f"djay says {known_bpm:.1f}, tracked {beat.bpm:.1f}")
+    elif track_engine == "ml-bass":
         from autohotcue.bassline import propose_cues_bass
 
         prop, bass_analysis = propose_cues_bass(
@@ -467,8 +490,10 @@ def cues_from_beats(
         djay_bpm=known_bpm,
         grid_fit=grid_fit,
         bass=bass_analysis,
+        bars=bars,
     )
-    place_pre_drop_cue(prop, track, pre_drop_bars)
+    if track_engine != "ml-stems":
+        place_pre_drop_cue(prop, track, pre_drop_bars)
     return track, prop
 
 
@@ -476,7 +501,7 @@ def analyze_decoded(
     y: np.ndarray,
     path: str,
     known_bpm: float | None = None,
-    engine: str = "ml-bass",
+    engine: str = DEFAULT_ENGINE,
     device: str | None = None,
     nudge_beats: float = 0.0,
     pre_drop_bars: int = PRE_DROP_BARS,

@@ -9,10 +9,6 @@ CUE_COLORS = {
     "A": "#34c759", "B": "#30b0c7", "C": "#ffcc00", "D": "#ff3b30",
     "E": "#007aff", "F": "#af52de", "G": "#5ac8fa", "H": "#ff9500",
 }
-CUE_LABELS = {
-    "A": "First Beat", "B": "Loop In", "C": "Vocal/Buildup", "D": "Drop",
-    "E": "Breakdown", "F": "Special", "G": "Outro", "H": "Loop Out",
-}
 SEG_COLORS = {
     "intro": "#a8dadc55",
     "verse": "#457b9d44",
@@ -21,7 +17,12 @@ SEG_COLORS = {
     "bridge": "#7209b744",
     "solo": "#f4a26144",
     "outro": "#2a9d8f44",
+    "drop": "#e6394644",
+    "breakdown": "#1d355744",
+    "buildup": "#f4a26144",
+    "cooldown": "#7209b744",
 }
+STEM_COLORS = {"drums": "#d62728", "bass": "#9467bd", "other": "#2ca02c", "vocals": "#1f77b4"}
 
 
 def render(path: str, track: analysis.TrackAnalysis, prop, out_png: str, title: str = ""):
@@ -37,7 +38,13 @@ def render(path: str, track: analysis.TrackAnalysis, prop, out_png: str, title: 
     t = np.arange(n) * win / sr
     duration = len(y) / sr
 
-    fig, ax = plt.subplots(figsize=(16, 4))
+    stems = track.bars if track.bars is not None and len(track.bars.starts) else None
+    if stems is None:
+        fig, ax = plt.subplots(figsize=(16, 4))
+    else:
+        fig, (ax, stem_ax) = plt.subplots(
+            2, 1, figsize=(16, 6), sharex=True, gridspec_kw={"height_ratios": [2, 1]}
+        )
     ax.fill_between(t, env, color="#cccccc", linewidth=0)
     ax.set_xlim(0, duration)
     ax.set_ylim(0, env.max() * 1.05)
@@ -98,6 +105,23 @@ def render(path: str, track: analysis.TrackAnalysis, prop, out_png: str, title: 
                 ha="center", va="bottom", fontsize=7, color="#333333", alpha=0.85,
             )
 
+    if stems is not None:
+        # Stem levels per bar, each against its own loudest bars.
+        for name, color in STEM_COLORS.items():
+            level = getattr(stems, name)
+            top = max(float(np.percentile(level, 90)), 1e-9)
+            stem_ax.step(
+                stems.starts, np.minimum(level / top, 1.2),
+                where="post", color=color, linewidth=1.2, label=name,
+            )
+        for ts in prop.positions.values():
+            stem_ax.axvline(ts, color="#00000055", linewidth=1)
+        stem_ax.set_ylim(0, 1.25)
+        stem_ax.set_yticks([])
+        stem_ax.legend(loc="upper right", fontsize=7, ncol=4, framealpha=0.8)
+        ax.set_xlabel("")
+        stem_ax.set_xlabel("time (s)")
+
     if track.downbeats is not None and len(track.downbeats):
         for db in track.downbeats:
             ax.axvline(db, color="#00000022", linewidth=0.6, zorder=1)
@@ -109,7 +133,7 @@ def render(path: str, track: analysis.TrackAnalysis, prop, out_png: str, title: 
         color = CUE_COLORS[pad]
         ax.axvline(ts, color=color, linewidth=2, zorder=3)
         ax.text(
-            ts, env.max() * (1.0 if pad in "ACEG" else 0.88), f" {pad} {CUE_LABELS[pad]}",
+            ts, env.max() * (1.0 if pad in "ACEG" else 0.88), f" {pad} {prop.label(pad)}",
             color=color, fontsize=8, rotation=90, va="top", ha="left", fontweight="bold",
             zorder=4,
         )

@@ -18,20 +18,25 @@ from autohotcue import tsaf
 
 DEFAULT_LIBRARY = Path.home() / "Music/djay/djay Media Library.djayMediaLibrary/MediaLibrary.db"
 
-# Cue slot labels from the djcues cue system (pads A-H = numbers 0-7)
-CUE_LABELS = [
-    "First Beat", "Loop In", "Vocal / Buildup", "Drop",
-    "Breakdown", "Special", "Outro", "Loop Out",
-]
+def cue_number_value(pad: int):
+    """The ``number`` of the hot cue on pad ``pad`` (0 for A, 7 for H).
 
-
-def cue_number_value(n: int):
-    """djay's integer encoding convention for cue slot numbers."""
-    if n == 0:
+    djay counts pads from 1.
+    Number 0 is the start point of the track, which is not a pad:
+    djay drops a hot cue with that number when it loads the track.
+    """
+    if not 0 <= pad <= 7:
+        raise ValueError(f"no such pad: {pad}")
+    if pad == 0:
         return tsaf.Marker(tsaf.TAG_M2D)
-    if n == 1:
-        return tsaf.Marker(tsaf.TAG_M2E)
-    return tsaf.Int(tsaf.TAG_INT8, n)
+    return tsaf.Int(tsaf.TAG_INT8, pad + 1)
+
+
+def cue_pad(number) -> int:
+    """The pad (0 for A) of a stored cue ``number``, or -1 when it is not a pad."""
+    if isinstance(number, tsaf.Marker):
+        return 0 if number.tag == tsaf.TAG_M2D else -1
+    return number.value - 1
 
 
 def _file_url_to_path(url: str) -> str | None:

@@ -1,4 +1,4 @@
-"""Optional all-in-one-mlx structure backend (Apple Silicon + mlx-audio-io >= 1.3.10)."""
+"""all-in-one-mlx structure backend (Apple Silicon + mlx-audio-io >= 1.3.10)."""
 from __future__ import annotations
 
 import os
@@ -42,9 +42,9 @@ class _AllInOneForwardWrapper:
 
 def _import_error(exc: BaseException | None = None) -> RuntimeError:
     msg = (
-        "ml-allin1 requires Apple Silicon macOS with optional deps installed:\n"
-        "  uv sync --extra allin1\n"
-        "Also set ALLIN1_MLX_WEIGHTS_DIR to a directory containing "
+        "ml-stems, ml-allin1 and ml-raveform run on MLX, which needs an Apple Silicon Mac.\n"
+        "On other machines, use --engine ml-bass.\n"
+        "ml-allin1 also needs its weights: set ALLIN1_MLX_WEIGHTS_DIR to a directory containing "
         f"{_WEIGHTS_MARKER} (and sibling fold weights), or clone all-in-one-mlx "
         "with its mlx-weights/ folder."
     )
@@ -197,17 +197,26 @@ def _prepare(weights_dir: Path, model_name: str = _MODEL_NAME):
     return separator, model
 
 
-def _track_spectrogram(path: str, separator):
+def _separate(path: str, separator) -> dict:
+    """The four demucs stems of a track (about 0.5 GB while they live)."""
+    _release_torch_mps_cache()
+    _, stems = separator.separate_audio_file(path, return_mx=True)
+    return stems
+
+
+def _spectrogram(stems: dict, separator):
     try:
         from allin1_mlx.spectrogram import spectrogram_from_stems
     except ImportError as exc:
         raise _import_error(exc) from exc
-    _release_torch_mps_cache()
-    # The stems (about 0.5 GB) are freed when this returns, before inference.
-    _, stems = separator.separate_audio_file(path, return_mx=True)
     return spectrogram_from_stems(
         stems, sample_rate=separator.samplerate, backend="mlx_fast", return_mx=True
     )
+
+
+def _track_spectrogram(path: str, separator):
+    # The stems are freed when this returns, before inference.
+    return _spectrogram(_separate(path, separator), separator)
 
 
 def _probabilities(spec, model):

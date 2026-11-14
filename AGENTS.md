@@ -11,15 +11,20 @@ into **djay Pro**'s library database. It analyzes audio structure directly
 (any `ffmpeg`-decodable format, including `.opus`/`.ogg`), so it does not depend
 on another DJ app's analysis.
 
-Pure-Python, single package, no service. Default pipeline (`ml-bass`): decode
-audio → **beat_this** beat/downbeat tracking → `gridlock` straight-grid fit →
-**kick-band (30–150 Hz) bass-in/out/return detection + 16/32-bar phrase snapping**
-(`bassline`) → write an 8-cue layout into djay's `MediaLibrary.db`. The structure
-engines segment by song form instead: `--engine ml`/`ml-librosa` use librosa
+Pure-Python, single package, no service. Default pipeline (`ml-stems`): decode
+audio, **beat_this** beat/downbeat tracking, `gridlock` straight-grid fit,
+**demucs** stems + **Raveform** section labels (`_stems`), drop / breakdown cue
+layout (`stempolicy`), then write the cues into djay's `MediaLibrary.db`.
+Pads A and B are 8 bars before the drop and the drop, C and D 8 bars before the
+breakdown and the breakdown, E to H a loop, a vocals-only passage, a bridge and
+the second drop (`docs/stems-engine.md`). It runs on MLX, so Apple Silicon only.
+The other engines place the older djcues layout (First Beat ... Loop Out):
+`--engine ml-bass` uses kick-band (30 to 150 Hz) bass-in/out/return detection +
+phrase snapping (`bassline`) and runs anywhere, `--engine ml`/`ml-librosa` use librosa
 Laplacian segmentation + the pure cue policy, `--engine ml-allin1` swaps structure
-for **all-in-one-mlx** (Apple Silicon; `uv sync --extra allin1`),
+for **all-in-one-mlx** (Apple Silicon),
 `--engine ml-raveform` runs the same model trained on **Raveform** dance tracks,
-which labels drops, breakdowns and buildups (same extra; weights downloaded on first use),
+which labels drops, breakdowns and buildups (weights downloaded on first use),
 `--engine ml-songformer` swaps structure for **SongFormer** (MPS when available;
 `uv sync --extra songformer`). A legacy band-energy engine remains behind
 `--engine legacy`.
@@ -29,8 +34,10 @@ src/autohotcue/
     tsaf.py      # parser + serializer for djay's undocumented "TSAF" blob format
     djaydb.py    # MediaLibrary.db (SQLite/YapDatabase) reader/writer, backups, cue builder
     backends.py  # beat_this + librosa / allin1 / songformer structure backends
-    _allin1.py   # optional all-in-one-mlx structure (ml-allin1 engine)
-    _raveform.py # optional Raveform-trained all-in-one structure (ml-raveform engine)
+    _stems.py    # per-bar stem levels + Raveform sections (ml-stems engine, the default)
+    stempolicy.py # pure cue policy for ml-stems: drop, breakdown, loop, vocals, bridge
+    _allin1.py   # all-in-one-mlx structure (ml-allin1 engine) + the shared demucs separator
+    _raveform.py # Raveform-trained all-in-one structure (ml-raveform and ml-stems)
     _songformer.py  # optional SongFormer structure (ml-songformer engine)
     gridlock.py  # pure straight-grid fit + cue snapping (beat/downbeat -> lattice)
     bassline.py  # pure kick-band bass events + phrase snapping (ml-bass policy)
@@ -40,9 +47,14 @@ src/autohotcue/
     bench.py     # ground-truth eval harness (hit-rate, MAE, runtime)
     viz.py       # waveform + segment/bass spans + downbeat ticks + cue-map PNG
     cli.py       # propose / viz / apply / verify / bench
+scripts/
+    stems_dump.py    # save what ml-stems measures per track (for tuning the rules)
+    stems_review.py  # rerun the ml-stems rules on those dumps: counts and plots
 tests/
     test_tsaf.py     # byte-exact round-trip of the whole real library + edge cases
     test_gridlock.py # straight-grid fit, snapping, beatGridEdits encoding
+    test_stempolicy.py # ml-stems cue rules on made-up tracks
+    test_stems.py    # ml-stems bar features and wiring, models faked
     test_bassline.py # ml-bass kick-band events + phrase snapping + slot rules
     test_cuepolicy.py
     test_predrop.py  # pad C placed N bars before the drop
@@ -54,12 +66,14 @@ tests/
 
 Key tech: Python 3.14 (pinned; `requires-python >=3.11`), [uv](https://docs.astral.sh/uv/)
 for env/deps, numpy + librosa + soundfile + matplotlib + **PyTorch** (via
-`beat-this`), and the external `ffmpeg` binary (must be on `PATH`). First run
-downloads beat_this model checkpoints (one-time network).
+`beat-this`), MLX with demucs-mlx and all-in-one-mlx on Apple Silicon, and the external
+`ffmpeg` binary (must be on `PATH`). First run downloads the beat_this, demucs and
+Raveform weights (one-time network).
 
 ## Setup commands
 
-- Install deps + create venv: `uv sync`
+- Install deps + create venv: `uv sync` (on Apple Silicon this includes MLX, demucs-mlx
+  and all-in-one-mlx, which the default engine needs)
 - Requires `ffmpeg` on `PATH` (`ffmpeg -version`); install via Homebrew: `brew install ffmpeg`
 - Python is pinned in `.python-version` (3.14.10); `uv` provisions it.
   Python 3.15 doesn't work yet: PyTorch has no build for it, and every engine
@@ -70,12 +84,13 @@ downloads beat_this model checkpoints (one-time network).
 Run the CLI through uv (no manual venv activation needed):
 
 ```bash
-uv run autohotcue propose "/path/to/track.opus"              # ml-bass engine (default)
+uv run autohotcue propose "/path/to/track.opus"              # ml-stems engine (default)
+uv run autohotcue propose "/path/to/track.opus" --engine ml-bass    # kick-band events, djcues layout
 uv run autohotcue propose "/path/to/track.opus" --engine ml         # librosa structure
 uv run autohotcue propose "/path/to/track.opus" --engine ml-allin1  # all-in-one structure
 uv run autohotcue propose "/path/to/track.opus" --engine ml-songformer  # SongFormer structure
 uv run autohotcue propose "/path/to/track.opus" --nudge-beats 1     # shift grid anchor +1 beat
-uv run autohotcue propose "/path/to/track.opus" --pre-drop-bars 16  # pad C 16 bars before the drop (0 = off)
+uv run autohotcue propose "/path/to/track.opus" --engine ml-bass --pre-drop-bars 16  # pad C 16 bars before the drop (0 = off)
 uv run autohotcue propose "/path/to/track.opus" --engine legacy
 uv run autohotcue viz "/path/to/track.opus" map.png          # segments + downbeat ticks
 uv run autohotcue verify "/path/to/track.opus"               # read back cues djay has stored
@@ -83,10 +98,13 @@ uv run autohotcue apply "/path/to/track.opus"                # WRITE cues into d
 uv run autohotcue bench truth.json --engines ml,ml-allin1,legacy -j 4
 ```
 
-`--engine {ml-bass,ml,ml-librosa,ml-allin1,ml-raveform,ml-songformer,legacy}` (default `ml-bass`).
-`ml-bass` (the default) uses kick-band bass events + 16/32-bar phrase snapping on the
+`--engine {ml-stems,ml-bass,ml,ml-librosa,ml-allin1,ml-raveform,ml-songformer,legacy}` (default `ml-stems`).
+`ml-stems` (the default) reads Raveform sections and demucs stems and places the drop /
+breakdown layout; read `docs/stems-engine.md` before changing `stempolicy.py`, its
+thresholds were tuned on the user's library. `--pre-drop-bars` does not apply to it.
+`ml-bass` uses kick-band bass events + 16/32-bar phrase snapping on the
 grid-locked lattice; `ml` / `ml-librosa` use librosa Laplacian structure; `ml-allin1`
-uses all-in-one-mlx (optional extra; see `docs/allin1-backend.md`); `ml-raveform` uses the
+uses all-in-one-mlx (see `docs/allin1-backend.md`); `ml-raveform` uses the
 all-in-one model trained on dance music, whose label order was worked out by hand
 (read `docs/raveform-backend.md` before touching `RAVEFORM_LABELS`); `ml-songformer` uses
 SongFormer (optional extra; see `docs/songformer-backend.md`; MPS when available). djay's BPM
@@ -181,6 +199,13 @@ needed. No CI is configured yet; if you add one, wire `uv sync` + `uv run pytest
   other devices. Treat single-machine as the supported case.
 - The TSAF container-count header counts objects, arrays/sets, NSData and NSDate
   (f64) but **not** URLs/strings/scalars — see the module docstring in `tsaf.py`.
+- djay numbers hot cue pads from 1 (A) to 8 (H). Number 0 is the track's start point,
+  not a pad, and djay drops a hot cue that carries it when it loads the track.
+  Tag `0x2d` is the integer 1 and tag `0x2e` the integer 0, not the other way around.
+  The tool had this wrong until 2026-11-14: pad B was written as 0 and never showed up,
+  and pads C to H landed one pad too low. `verify` read the numbers back with the same
+  mistake, so it showed nothing wrong. After a change to what is written, have someone
+  look at one track in djay.
 - Tag `0x02` points back to an object written earlier in the same record.
   `tsaf.Ref` handles it, and the writer works out the position again.
   Never keep that position yourself: once an edit adds cues or a grid object

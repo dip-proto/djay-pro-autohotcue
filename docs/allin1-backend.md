@@ -25,7 +25,7 @@ the helper is pinned by tests (see `docs/allin1-performance.md`).
 ## Prerequisites
 
 - macOS Apple Silicon (MLX)
-- `uv sync --extra allin1`
+- `uv sync` (the MLX packages are regular dependencies on Apple Silicon)
 - MLX weights for harmonix-fold0 in one of:
   - `$ALLIN1_MLX_WEIGHTS_DIR`
   - `~/.cache/autohotcue/mlx-weights/` (auto-populated from clone on first use)
@@ -36,11 +36,10 @@ the helper is pinned by tests (see `docs/allin1-performance.md`).
 ## Usage
 
 ```bash
-uv sync --extra allin1
 uv run autohotcue propose "/path/to/track.opus" --engine ml-allin1
 ```
 
-Engines: `ml` / `ml-librosa` (librosa Laplacian, default), `ml-allin1`, `legacy`.
+Engines: `ml-stems` (default), `ml` / `ml-librosa` (librosa Laplacian), `ml-allin1`, `legacy`.
 
 ```bash
 uv run autohotcue bench truth.json --engines ml,ml-allin1,legacy

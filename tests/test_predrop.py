@@ -121,5 +121,5 @@ def test_propose_passes_the_bar_count_on(monkeypatch, tmp_path, folder, bars):
     for name in ("a.opus", "b.opus"):
         (tmp_path / name).write_bytes(b"")
     target = tmp_path if folder else tmp_path / "a.opus"
-    cli.main(["propose", str(target), "-j", "2", "--pre-drop-bars", str(bars)])
+    cli.main(["propose", str(target), "-j", "2", "--engine", "ml-bass", "--pre-drop-bars", str(bars)])
     assert seen == [bars] * (2 if folder else 1)

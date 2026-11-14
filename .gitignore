@@ -18,3 +18,6 @@ all-in-one-mlx/
 # AI
 .swival
 LOG.md
+
+# Scratch space: feature dumps, plots, library copies
+tmp/

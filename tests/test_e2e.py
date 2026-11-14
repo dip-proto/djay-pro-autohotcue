@@ -224,6 +224,31 @@ def test_all_in_one_engines_on_real_track(engine: str, track_path: str):
         assert _beats_after(prop.positions["G"], track.beats) >= 8
 
 
+@pytest.mark.parametrize("track_path", E2E_TRACKS)
+def test_ml_stems_analyze_real_track(track_path: str):
+    if not _raveform_prereqs():
+        pytest.skip("ml-stems prerequisites missing")
+    if not Path(track_path).is_file():
+        pytest.skip(f"missing track: {track_path}")
+
+    track, prop = analysis.analyze(track_path, engine="ml-stems", jobs=1)
+
+    assert track.engine == "ml-stems"
+    assert track.segments and track.bars is not None
+    starts = track.bars.starts
+    bars = {pad: int(np.argmin(np.abs(starts - t))) for pad, t in prop.positions.items()}
+    for pad, bar in bars.items():
+        assert prop.positions[pad] == pytest.approx(starts[bar], abs=1e-6), pad
+    if "A" in bars:
+        assert bars["B"] - bars["A"] == 8
+    if "D" in bars:
+        assert bars["D"] - bars["C"] == 8
+        if "B" in bars:
+            assert bars["C"] > bars["B"]
+    assert len(set(bars.values())) == len(bars)
+    assert all(prop.labels[pad] for pad in bars)
+
+
 @pytest.mark.skipif(
     os.environ.get("AUTOHOTCUE_RUN_SONGFORMER_E2E") != "1",
     reason="opt-in: set AUTOHOTCUE_RUN_SONGFORMER_E2E=1 (loads a 2.8 GB model)",
@@ -359,12 +384,8 @@ def test_apply_verify_roundtrip(tmp_path):
         doc = db.get("mediaItemUserData", key)
         assert doc is not None
         stored = {}
-        from autohotcue import tsaf
-
         for cp in doc.root.get("cuePoints").items:
-            num = cp.get("number")
-            idx = num.value if isinstance(num, tsaf.Int) else (0 if num.tag == 0x2D else 1)
-            letter = chr(65 + idx)
+            letter = chr(65 + djaydb.cue_pad(cp.get("number")))
             stored[letter] = float(cp.get("time").value)
 
         for letter, t in expected.items():

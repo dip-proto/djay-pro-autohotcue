@@ -147,10 +147,28 @@ def test_int16_roundtrip_both_parities():
         assert got.tag == tsaf.TAG_INT16 and got.value == 2026
 
 
-def test_cue_number_encoding():
-    assert isinstance(djaydb.cue_number_value(0), tsaf.Marker)
-    assert isinstance(djaydb.cue_number_value(1), tsaf.Marker)
-    assert djaydb.cue_number_value(5).value == 5
+def test_pads_are_numbered_from_1():
+    # What djay itself stores for cues set on pads A to H: 1 has a tag of its own.
+    assert djaydb.cue_number_value(0) == tsaf.Marker(tsaf.TAG_M2D)
+    numbers = [djaydb.cue_number_value(pad) for pad in range(1, 8)]
+    assert [n.value for n in numbers] == [2, 3, 4, 5, 6, 7, 8]
+    assert all(n.tag == tsaf.TAG_INT8 for n in numbers)
+
+
+def test_no_pad_gets_number_0():
+    # Number 0 is the start point: djay drops a hot cue that carries it.
+    zero = tsaf.Marker(tsaf.TAG_M2E)
+    assert all(djaydb.cue_number_value(pad) != zero for pad in range(8))
+    assert djaydb.cue_pad(zero) == -1
+
+
+def test_cue_pad_reads_back_what_was_written():
+    assert [djaydb.cue_pad(djaydb.cue_number_value(pad)) for pad in range(8)] == list(range(8))
+
+
+def test_no_ninth_pad():
+    with pytest.raises(ValueError):
+        djaydb.cue_number_value(8)
 
 
 def test_anonymous_field_is_stable():

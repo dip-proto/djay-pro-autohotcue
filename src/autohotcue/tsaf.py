@@ -36,8 +36,8 @@ Tags:
     0x21  URL: string token + 0x00 terminator (wrapper object)
     0x2b  object begin: followed by class-name string token, then
           (value, field-name) pairs, terminated by 0x00
-    0x2d  integer 0, no payload
-    0x2e  integer 1, no payload
+    0x2d  integer 1, no payload
+    0x2e  integer 0, no payload
     0x30  float64, 8-aligned (NSDate)
 
 Field order within an object is value first, then field name. The name is
@@ -178,7 +178,7 @@ class Int:
 
 @dataclass
 class Marker:
-    """Payload-less scalar (tags 0x2d / 0x2e); semantics opaque, preserved."""
+    """Payload-less integer: tag 0x2d is 1, tag 0x2e is 0."""
 
     tag: int
 

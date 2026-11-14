@@ -10,9 +10,11 @@ pop-trained model that `ml-allin1` uses.
 Beats still come from beat_this, and cues still snap to its downbeats.
 
 ```bash
-uv sync --extra allin1
 uv run autohotcue propose "/path/to/track.m4a" --engine ml-raveform
 ```
+
+The default engine, `ml-stems`, reads the same labels and checks them against the stems
+(`docs/stems-engine.md`).
 
 ## Weights
 
@@ -24,8 +26,7 @@ as the dance-only one on dance tracks.
 
 The download is pinned to one revision and checked against its SHA-256.
 
-The repo doesn't state a license for these files.
-Only use them if you have one.
+The repo's model card declares them MIT.
 
 On first use, the file is downloaded and converted into
 `~/.cache/autohotcue/mlx-weights/raveform-all-fold0/`.

@@ -48,7 +48,7 @@ def test_all_items_processed_exactly_once(monkeypatch):
     monkeypatch.setattr(pl, "decode", lambda path: path)
     _stub_offload(monkeypatch)
     items = [(i, f"/{i}", None) for i in range(25)]
-    out = list(pl.iter_analyze_pipelined(items, decode_threads=4))
+    out = list(pl.iter_analyze_pipelined(items, decode_threads=4, engine="ml-bass"))
     assert sorted(tok for tok, _, _, _ in out) == list(range(25))
     assert all(err is None for *_, err in out)
     assert all(result == ("R", path) for _, path, result, _ in out)
@@ -64,7 +64,7 @@ def test_completion_order_independent(monkeypatch):
     monkeypatch.setattr(pl, "decode", fake_decode)
     _stub_offload(monkeypatch)
     items = [(i, f"/{i}", None) for i in range(10)]
-    out = list(pl.iter_analyze_pipelined(items, decode_threads=4))
+    out = list(pl.iter_analyze_pipelined(items, decode_threads=4, engine="ml-bass"))
     assert sorted(tok for tok, _, _, _ in out) == list(range(10))
 
 
@@ -77,7 +77,7 @@ def test_decode_error_surfaced_per_track(monkeypatch):
     _stub_offload(monkeypatch)
     items = [(0, "/good", None), (1, "/bad", None), (2, "/good2", None)]
     got = {tok: (path, result, err)
-           for tok, path, result, err in pl.iter_analyze_pipelined(items, decode_threads=2)}
+           for tok, path, result, err in pl.iter_analyze_pipelined(items, decode_threads=2, engine="ml-bass")}
     assert isinstance(got[1][1], type(None)) and isinstance(got[1][2], ValueError)
     assert got[0][1] == ("R", "/good")
     assert got[2][1] == ("R", "/good2")
@@ -119,6 +119,7 @@ def test_backpressure_bounds_prefetch(monkeypatch):
     gen = pl.iter_analyze_pipelined(
         items, decode_threads=decode_threads, lookahead=lookahead,
         dsp_threads=dsp_threads,
+        engine="ml-bass",
     )
     first = next(gen)
     time.sleep(0.3)
@@ -139,7 +140,7 @@ def test_early_break_tears_down_threads(monkeypatch):
     monkeypatch.setattr(pl, "decode", slow_decode)
     _stub_offload(monkeypatch)
     items = [(i, f"/{i}", None) for i in range(200)]
-    gen = pl.iter_analyze_pipelined(items, decode_threads=3)
+    gen = pl.iter_analyze_pipelined(items, decode_threads=3, engine="ml-bass")
     next(gen)
     gen.close()
     deadline = time.time() + 3.0
@@ -164,7 +165,7 @@ def test_dsp_offload_all_items_once(monkeypatch):
     _stub_offload(monkeypatch, infer_fn=fake_infer, cues_fn=fake_cues)
 
     items = [(i, f"/{i}", None) for i in range(12)]
-    out = list(pl.iter_analyze_pipelined(items, decode_threads=2, dsp_threads=1))
+    out = list(pl.iter_analyze_pipelined(items, decode_threads=2, dsp_threads=1, engine="ml-bass"))
     assert sorted(tok for tok, _, _, _ in out) == list(range(12))
     assert all(err is None for *_, err in out)
     assert len(beats) == 12
@@ -183,7 +184,7 @@ def test_dsp_stage_error_surfaced_per_track(monkeypatch):
 
     items = [(0, "/good", None), (1, "/bad", None), (2, "/good2", None)]
     got = {tok: (result, err)
-           for tok, _, result, err in pl.iter_analyze_pipelined(items, decode_threads=2)}
+           for tok, _, result, err in pl.iter_analyze_pipelined(items, decode_threads=2, engine="ml-bass")}
     assert got[0] == (("R", "/good"), None)
     assert got[1][0] is None and isinstance(got[1][1], ValueError)
     assert got[2] == (("R", "/good2"), None)
@@ -200,7 +201,7 @@ def test_inference_error_surfaced_in_offload_path(monkeypatch):
 
     items = [(0, "/good", None), (1, "/bad", None)]
     got = {tok: (result, err)
-           for tok, _, result, err in pl.iter_analyze_pipelined(items, decode_threads=2)}
+           for tok, _, result, err in pl.iter_analyze_pipelined(items, decode_threads=2, engine="ml-bass")}
     assert got[0] == (("R", "/good"), None)
     assert got[1][0] is None and isinstance(got[1][1], RuntimeError)
 
@@ -421,7 +422,7 @@ def test_close_waits_for_slow_inflight_work(monkeypatch):
     _stub_offload(monkeypatch, cues_fn=slow_cues)
 
     items = [(0, "/fast", None), (1, "/slow", None)]
-    gen = pl.iter_analyze_pipelined(items, decode_threads=1, dsp_threads=1)
+    gen = pl.iter_analyze_pipelined(items, decode_threads=1, dsp_threads=1, engine="ml-bass")
     next(gen)
     time.sleep(0.2)
     gen.close()
@@ -520,5 +521,5 @@ def test_pre_drop_bars_reach_the_cue_stage(monkeypatch, dsp_threads):
     _stub_offload(monkeypatch, cues_fn=record)
     _stub_inline(monkeypatch, record)
     items = [(i, f"/{i}", None) for i in range(3)]
-    list(pl.iter_analyze_pipelined(items, pre_drop_bars=16, dsp_threads=dsp_threads))
+    list(pl.iter_analyze_pipelined(items, pre_drop_bars=16, dsp_threads=dsp_threads, engine="ml-bass"))
     assert seen == [16, 16, 16]

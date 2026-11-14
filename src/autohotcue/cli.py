@@ -136,7 +136,7 @@ def _print_proposal(track: analysis.TrackAnalysis, prop: analysis.CueProposal) -
         t = prop.positions.get(pad)
         if t is not None:
             m, s = divmod(t, 60)
-            print(f"  {pad} {djaydb.CUE_LABELS[ord(pad)-65]:16s} {int(m)}:{s:05.2f} ({t:.3f}s)")
+            print(f"  {pad} {prop.label(pad):16s} {int(m)}:{s:05.2f} ({t:.3f}s)")
     for note in prop.notes:
         print("  -", note)
     _print_grid_fit(track)
@@ -327,7 +327,7 @@ def _write_one(
     for i, pad in enumerate("ABCDEFGH"):
         t = positions.get(pad)
         if t is not None:
-            cues.append({"time": t, "number": i, "comment": djaydb.CUE_LABELS[i]})
+            cues.append({"time": t, "number": i, "comment": prop.label(pad)})
     if not cues:
         raise _Skip("analysis produced no cues")
 
@@ -569,9 +569,9 @@ def cmd_verify(args):
             print("  no cues stored" if batch else "no cues stored for this track")
             continue
         for cp in doc.root.get("cuePoints").items:
-            num = cp.get("number")
-            n = num.value if isinstance(num, tsaf.Int) else (0 if num.tag == 0x2D else 1)
-            print(f"  {chr(65+n)} {cp.get('comment') or '':16s} {cp.get('time').value:.3f}s")
+            pad = djaydb.cue_pad(cp.get("number"))
+            name = chr(65 + pad) if pad >= 0 else "-"
+            print(f"  {name} {cp.get('comment') or '':16s} {cp.get('time').value:.3f}s")
         bge = doc.root.get("beatGridEdits")
         if isinstance(bge, tsaf.Obj):
             pos = bge.get("firstDownbeatPosition")
@@ -584,11 +584,12 @@ def _add_engine_arg(sp):
     sp.add_argument(
         "--engine",
         choices=_ENGINE_CHOICES,
-        default="ml-bass",
-        help="analysis engine: ml-bass (kick-band events + phrase snapping), "
+        default=analysis.DEFAULT_ENGINE,
+        help="analysis engine: ml-stems (drop and breakdown from Raveform sections and demucs "
+        "stems), ml-bass (kick-band events + phrase snapping), "
         "ml/ml-librosa (librosa structure), ml-allin1 (all-in-one-mlx structure), "
         "ml-raveform (all-in-one retrained on EDM section labels), "
-        "ml-songformer (SongFormer structure), legacy (default: ml-bass)",
+        "ml-songformer (SongFormer structure), legacy (default: ml-stems)",
     )
 
 
@@ -615,7 +616,8 @@ def _add_pre_drop_arg(sp):
         type=_bar_count,
         default=analysis.PRE_DROP_BARS,
         metavar="N",
-        help=f"put pad C N bars before the drop (default: {analysis.PRE_DROP_BARS}; 0 to turn off)",
+        help=f"put pad C N bars before the drop (default: {analysis.PRE_DROP_BARS}; 0 to turn off); "
+        "ml-stems ignores it, its pads A and C are always 8 bars ahead",
     )
 
 

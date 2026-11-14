@@ -580,3 +580,35 @@ def test_snap_cues_clamps_before_nearest():
         reason="",
     )
     assert snap_cues({"A": 0.1}, fit)["A"] == pytest.approx(0.4, abs=1e-9)
+
+
+
+def test_snap_cues_take_a_beat_just_before_the_audio_as_its_start():
+    """A file that opens on a downbeat has its first grid beat a few milliseconds before 0."""
+    fit = GridFit(
+        bpm=120.0,
+        render_bpm=120.0,
+        anchor_s=1.997,
+        beat_fit=0.01,
+        bar_resid_std=0.01,
+        splice_jump=0.0,
+        ok=True,
+        reason="",
+    )
+    snapped = snap_cues({"A": 0.0, "B": 15.997}, fit)
+    assert snapped["A"] == 0.0
+    assert snapped["B"] == pytest.approx(15.997, abs=1e-9)
+
+
+def test_snap_cues_leave_out_a_beat_well_before_the_audio():
+    fit = GridFit(
+        bpm=120.0,
+        render_bpm=120.0,
+        anchor_s=1.9,
+        beat_fit=0.01,
+        bar_resid_std=0.01,
+        splice_jump=0.0,
+        ok=True,
+        reason="",
+    )
+    assert snap_cues({"A": 0.0}, fit)["A"] == pytest.approx(0.4, abs=1e-9)

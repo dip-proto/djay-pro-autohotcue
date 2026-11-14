@@ -8,7 +8,7 @@ No USB export, no intermediate app, no reliance on another DJ tool's phrase data
 and it works on **`.opus`/`.ogg`**, which rekordbox, Serato, and the
 rekordbox→djay bridges refuse.
 
-![Move — auto hot cues](move_cuemap.png)
+![Cues and stem levels of a house track](stems_cuemap.png)
 
 ---
 
@@ -36,10 +36,10 @@ A track flows through five stages — decode, beat-track, grid-lock, place cues,
    beats/downbeats so every cue sits exactly on djay's rendered lattice. Spliced or
    ambiguous grids degrade gracefully — cues are still placed, phrase-snapping just
    turns off.
-4. **Place cues** with the selected [engine](#engines). The default **`ml-bass`**
-   detects kick-band (30–150 Hz) bass-in / bass-out / bass-return events and snaps
-   them to the 8-bar phrase grid — Afro-House-native structure with no separate
-   segmentation step.
+4. **Place cues** with the selected [engine](#engines).
+   The default, **`ml-stems`**, splits the track into drums, bass, other and vocals
+   with demucs, reads the sections (intro, buildup, drop, breakdown, outro) with the
+   Raveform model, and puts the cues on the bars where the stems agree something happens.
 5. **Write** the cues into djay's `mediaItemUserData` record as `ADCCuePoint`
    objects, serialized in djay's own undocumented **[TSAF](#the-tsaf-format)** binary
    format — re-checked byte-for-byte before anything touches the database.
@@ -48,43 +48,49 @@ A track flows through five stages — decode, beat-track, grid-lock, place cues,
 
 ### The cue layout
 
-The `ml-bass` engine places this 8-pad layout (cue letters mirror the djcues convention):
+The default engine places pads for mixing in and out on a drop:
 
-| Pad | Cue        | Placed at |
-|-----|------------|-----------|
-| A   | First Beat | first bar at full level |
-| B   | Loop In    | = A |
-| C   | Buildup    | exactly 8 bars before the drop (see below) |
-| D   | Drop       | the payoff bass-in — a return, or ≥20% into the track (never the groove start) |
-| E   | Breakdown  | first ≥8-bar bass-out after the drop |
-| F   | 2nd Drop   | first ≥8-bar bass-return after the breakdown |
-| G   | Outro      | start of the final mix-out (≥16 audible bars remain) |
-| H   | Loop Out   | last fully-audible 8-bar loop boundary |
+| Pad | Cue             | Placed at |
+|-----|-----------------|-----------|
+| A   | 8 Bars to Drop  | exactly 8 bars (32 beats) before B |
+| B   | Drop            | where the beat and the bassline come in |
+| C   | 8 Bars to Break | exactly 8 bars before D |
+| D   | Breakdown       | where the track thins out with no vocals: the place to bring the next track in |
+| E   | Loop            | 8 bars of full groove that the track repeats right after, so they loop without a seam |
+| F   | Vocals          | the longest passage of vocals over little or no beat |
+| G   | Bridge          | the beat going on without its bassline for 8 bars or more |
+| H   | Drop 2          | the second drop |
 
-The structure engines (below) instead map detected song-form segments onto the same
-pads via a pure placement policy (`cuepolicy.py`).
+Start the next track on its pad A when the playing one reaches pad C:
+its drop then lands on the breakdown of the track going out.
 
-Whatever the engine, pad C ends up 8 bars before the drop.
-It's a cue you can rely on to mix in just before a drop.
+When a track has no vocals-only passage or no bridge, pads E to H take what else was found:
+a second loop from a different part of the track, or a third and fourth drop.
+Each cue is named after what it marks, so djay shows which is which.
+A pad stays empty when the track has nothing for it, except B.
+A track with no drop gets B where its fullest passage starts, named Peak.
+`docs/stems-engine.md` has the rules.
 
-`--pre-drop-bars N` changes the distance, and `--pre-drop-bars 0` keeps the
-engine's own buildup cue instead.
-If a cue is already there, nothing changes.
-If the drop comes too soon after the start, pad C stays where the engine put it.
+The other engines place the older djcues layout
+(First Beat, Loop In, Buildup, Drop, Breakdown, 2nd Drop, Outro, Loop Out),
+with pad C moved to 8 bars before the drop.
+`--pre-drop-bars N` changes that distance for them, and `--pre-drop-bars 0` keeps the
+engine's own buildup cue.
 
 ---
 
 ## Engines
 
-Pick with `--engine` (default `ml-bass`). All but `legacy` use beat_this for the grid;
+Pick with `--engine` (default `ml-stems`). All but `legacy` use beat_this for the grid;
 they differ only in how they decide *where the cues go*.
 
 | `--engine`        | Structure method | Notes |
 |-------------------|------------------|-------|
-| **`ml-bass`** (default) | kick-band bass events + 8-bar phrase snapping | Afro-House-native; no segmentation; pure numpy/scipy |
+| **`ml-stems`** (default) | demucs stems + Raveform sections | drop and breakdown layout; Apple Silicon only; about 5 s per track; see `docs/stems-engine.md` |
+| `ml-bass`         | kick-band bass events + 8-bar phrase snapping | no segmentation; pure numpy/scipy; runs anywhere |
 | `ml` / `ml-librosa` | librosa Laplacian segmentation | song-form segments → cue policy |
-| `ml-allin1`       | [all-in-one-mlx](https://github.com/mir-aidj/all-in-one) | Apple-Silicon GPU; `uv sync --extra allin1` · `docs/allin1-backend.md` |
-| `ml-raveform`     | all-in-one trained on [Raveform](https://mir-aidj.github.io/raveform/) dance tracks | labels drops, breakdowns and buildups; same extra; weights downloaded on first use · `docs/raveform-backend.md` |
+| `ml-allin1`       | [all-in-one-mlx](https://github.com/mir-aidj/all-in-one) | Apple Silicon only; see `docs/allin1-backend.md` |
+| `ml-raveform`     | all-in-one trained on [Raveform](https://mir-aidj.github.io/raveform/) dance tracks | labels drops, breakdowns and buildups; weights downloaded on first use; see `docs/raveform-backend.md` |
 | `ml-songformer`   | [SongFormer](https://github.com/MOSS-Music/SongFormer) | Apple-Silicon GPU when available, CPU otherwise; `uv sync --extra songformer` · `docs/songformer-backend.md` |
 | `legacy`          | band-energy heuristics | pre-overhaul behavior, kept for comparison |
 
@@ -104,9 +110,10 @@ brew install ffmpeg          # or your platform's package manager
 uv sync                      # create the venv + install deps
 ```
 
-The first analysis run downloads beat_this model checkpoints once (network needed).
-Optional structure engines are extras: `uv sync --extra allin1` and/or
-`uv sync --extra songformer`.
+The first analysis run downloads the beat_this, demucs and Raveform weights once (network needed).
+On an Apple Silicon Mac, `uv sync` also installs MLX for the default engine.
+Elsewhere, use `--engine ml-bass`.
+SongFormer is an extra: `uv sync --extra songformer`.
 
 ---
 
@@ -117,9 +124,10 @@ Optional structure engines are extras: `uv sync --extra allin1` and/or
 uv run autohotcue propose "/path/to/track.opus"
 
 # Other engines
+uv run autohotcue propose "/path/to/track.opus" --engine ml-bass     # kick-band events, djcues layout
 uv run autohotcue propose "/path/to/track.opus" --engine ml          # librosa structure
-uv run autohotcue propose "/path/to/track.opus" --engine ml-allin1   # needs --extra allin1
-uv run autohotcue propose "/path/to/track.opus" --engine ml-raveform # EDM section labels, same extra
+uv run autohotcue propose "/path/to/track.opus" --engine ml-allin1   # all-in-one structure
+uv run autohotcue propose "/path/to/track.opus" --engine ml-raveform # EDM section labels
 uv run autohotcue propose "/path/to/track.opus" --engine legacy
 
 # Render a waveform + segment/bass spans + downbeat ticks + cue map to PNG
@@ -132,7 +140,7 @@ uv run autohotcue apply "/path/to/track.opus"
 uv run autohotcue verify "/path/to/track.opus"
 
 # Score engines against hand-labeled ground truth
-uv run autohotcue bench truth.json --engines ml-bass,ml,legacy -j 4
+uv run autohotcue bench truth.json --engines ml-stems,ml-bass,legacy -j 4
 ```
 
 The track must already be in djay's **My Collection** so the library has a record to
@@ -162,6 +170,11 @@ Two execution modes for a folder run:
 
 In every mode **database writes stay serialized on the main thread** — only the audio
 analysis is parallelized.
+
+The default engine runs demucs on the GPU, so it always analyzes one track at a time,
+whatever `-j` says; the pipeline still decodes the next tracks ahead.
+It takes about 5 seconds per track on an M5 Max, mostly spent separating the stems.
+The numbers below are for `--engine ml-bass`.
 
 > **Which `-j` should I use? On Apple Silicon, keep the default `-j 1` — it's the
 > fastest *and* the most memory-safe.** `-j` is not "more workers = faster" here:
@@ -256,11 +269,13 @@ src/autohotcue/
     tsaf.py       # TSAF binary parser + serializer (byte-exact round-trip)
     djaydb.py     # MediaLibrary.db reader/writer, backups, cue-record builder
     backends.py   # beat_this + librosa / allin1 / songformer structure backends
-    _allin1.py    # optional all-in-one-mlx structure (ml-allin1)
-    _raveform.py  # optional Raveform-trained all-in-one structure (ml-raveform)
+    _stems.py     # ml-stems: per-bar stem levels + Raveform sections (default engine)
+    stempolicy.py # ml-stems: pure cue policy (drop, breakdown, loop, vocals, bridge)
+    _allin1.py    # all-in-one-mlx structure (ml-allin1) and the shared demucs separator
+    _raveform.py  # Raveform-trained all-in-one structure (ml-raveform, ml-stems)
     _songformer.py # optional SongFormer structure (ml-songformer)
     gridlock.py   # straight beat-grid fit + cue snapping to djay's lattice
-    bassline.py   # ml-bass: kick-band bass events + 8-bar phrase snapping (default)
+    bassline.py   # ml-bass: kick-band bass events + 8-bar phrase snapping
     cuepolicy.py  # pure structure-based cue-placement policy
     ravepolicy.py # pure cue policy for Raveform section labels
     analysis.py   # decode + analyze() dispatcher (infer_beats / cues_from_beats split)

@@ -20,6 +20,7 @@ import threading
 from collections.abc import Iterable, Iterator
 
 from autohotcue.analysis import (
+    DEFAULT_ENGINE,
     PRE_DROP_BARS,
     analyze_decoded,
     cues_from_beats,
@@ -62,7 +63,7 @@ def _join_workers(workers: list[threading.Thread], stop: threading.Event,
 def iter_analyze_pipelined(
     items: Iterable[tuple],
     *,
-    engine: str = "ml-bass",
+    engine: str = DEFAULT_ENGINE,
     nudge_beats: float = 0.0,
     pre_drop_bars: int = PRE_DROP_BARS,
     device: str | None = None,

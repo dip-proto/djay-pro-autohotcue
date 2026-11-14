@@ -2,7 +2,7 @@
 
 This is the all-in-one model trained on dance music, with labels like intro,
 buildup, drop and breakdown.
-It runs through all-in-one-mlx, so it needs `uv sync --extra allin1`.
+It runs through all-in-one-mlx, so it needs an Apple Silicon Mac.
 
 The weights are downloaded and converted on first use.
 """
