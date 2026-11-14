@@ -52,6 +52,8 @@ tracked beats, and everything else works the same.
 A bar is four of djay's beats, whatever the tracker counts.
 On some tracks djay counts half as many beats as the tracker (80 BPM against 160):
 a bar is then eight tracked beats, so that 8 bars are 32 beats on djay's screen.
+The tracker calls a downbeat every four of its beats, which leaves two candidates for the
+start of such a bar: the one where more sections start is taken.
 
 A file often opens right on a downbeat, which the grid then puts a few milliseconds
 before the audio.
