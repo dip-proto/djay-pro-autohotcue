@@ -67,6 +67,7 @@ its drop then lands on the breakdown of the track going out.
 When a track has no vocals-only passage or no bridge, pads E to H take what else was found:
 a second loop from a different part of the track, or a third and fourth drop.
 Each cue is named after what it marks, so djay shows which is which.
+A Loop cue plays as a 32-beat loop in djay.
 A pad stays empty when the track has nothing for it, except B.
 A track with no drop gets B where its fullest passage starts, named Peak.
 `docs/stems-engine.md` has the rules.

@@ -34,7 +34,12 @@ def load(npz: Path):
     bpm, render, anchor, ok = z["fit"]
     fit = SimpleNamespace(ok=bool(ok), bpm=float(bpm), render_bpm=float(render), anchor_s=float(anchor))
     duration = float(z["duration"])
-    edges = _stems.bar_edges(z["beats"], z["downbeats"], fit, duration)
+    # Older dumps have no tempo of their own: they were made from tracks that djay knows,
+    # and the grid fit keeps djay's tempo as its render tempo.
+    djay_bpm = float(z["djay_bpm"]) if "djay_bpm" in z else fit.render_bpm
+    edges = _stems.bar_edges(
+        z["beats"], z["downbeats"], fit, duration, djay_bpm or None, z["seg_start"]
+    )
     if len(edges) < 2:
         edges = np.array([0.0, duration])
     powers = {

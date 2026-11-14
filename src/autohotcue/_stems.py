@@ -5,6 +5,8 @@ The Raveform model reads the same stems, so both come out of a single separation
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import numpy as np
 
 from autohotcue import _allin1, _raveform
@@ -23,6 +25,7 @@ DOUBLED_BEAT = 0.6
 MISSING_BEAT = 1.5
 LOCAL_GAPS = 8
 USUAL_GAP = 0.1
+SAME_TEMPO = 0.05
 
 
 def _grid_edges(anchor_s: float, bar_s: float, duration_s: float) -> np.ndarray:
@@ -78,7 +81,41 @@ def _tempo_guesses(beats: np.ndarray) -> list[float]:
     return [float(some.mean()) for some in (gaps, usual) if len(some)]
 
 
-def _steady_edges(beats: np.ndarray, downbeats: np.ndarray, duration_s: float) -> np.ndarray | None:
+def _beats_per_bar(tempo: float, djay_bpm: float | None) -> int:
+    """How many tracked beats make a bar of four djay beats.
+
+    djay sometimes counts half as many beats as the tracker, or twice as many.
+    Bars follow djay, since its beats are the ones shown on screen.
+    """
+    if djay_bpm:
+        for per_bar in (2, 8):
+            if abs(4.0 * tempo / (per_bar * djay_bpm) - 1.0) < SAME_TEMPO:
+                return per_bar
+    return 4
+
+
+def _bar_phase(downbeats: np.ndarray, sections: np.ndarray, per_bar: int) -> int:
+    """Which beat starts a bar, given the beat numbers of the downbeats and section starts.
+
+    The tracker calls a downbeat every four of its beats.
+    In a bar of eight, that leaves two beats to choose from, and the one where
+    more sections start is taken: a drop starts on a bar.
+    """
+    step = min(per_bar, 4)
+    first = int(np.bincount(downbeats % step, minlength=step).argmax())
+    candidates = range(first, per_bar, step)
+    section_votes = np.bincount(sections % per_bar, minlength=per_bar)
+    downbeat_votes = np.bincount(downbeats % per_bar, minlength=per_bar)
+    return max(candidates, key=lambda phase: (section_votes[phase], downbeat_votes[phase], -phase))
+
+
+def _steady_edges(
+    beats: np.ndarray,
+    downbeats: np.ndarray,
+    duration_s: float,
+    djay_bpm: float | None,
+    section_starts: np.ndarray,
+) -> np.ndarray | None:
     """Bars on a straight lattice, when the tracked beats keep one tempo all along.
 
     The grid fit gives up on a track as soon as a few beats are off, because it would
@@ -95,14 +132,22 @@ def _steady_edges(beats: np.ndarray, downbeats: np.ndarray, duration_s: float) -
     phase = float(np.angle(np.mean(np.exp(2j * np.pi * beats / period))) / (2 * np.pi) * period)
     if np.mean(_off_lattice(beats, phase, period) < STEADY_TOLERANCE) < STEADY_MIN_BEATS:
         return None
+    per_bar = _beats_per_bar(bpm, djay_bpm)
     on_beat = downbeats[_off_lattice(downbeats, phase, period) < STEADY_TOLERANCE]
     index = np.round((on_beat - phase) / period).astype(int)
-    first = int(np.bincount(index % 4, minlength=4).argmax())
-    return _grid_edges((phase + first * period) % (4 * period), 4 * period, duration_s)
+    sections = np.round((section_starts - phase) / period).astype(int)
+    first = _bar_phase(index, sections, per_bar)
+    bar_s = per_bar * period
+    return _grid_edges((phase + first * period) % bar_s, bar_s, duration_s)
 
 
 def bar_edges(
-    beats: np.ndarray, downbeats: np.ndarray, fit: GridFit | None, duration_s: float
+    beats: np.ndarray,
+    downbeats: np.ndarray,
+    fit: GridFit | None,
+    duration_s: float,
+    djay_bpm: float | None = None,
+    section_starts: Sequence[float] = (),
 ) -> np.ndarray:
     """Start of every bar, plus the end of the last one."""
     if fit is not None and fit.ok:
@@ -115,14 +160,17 @@ def bar_edges(
     if len(beats) < 8 or len(downbeats) == 0:
         return np.zeros(0)
     beats = _even_beats(np.asarray(beats, dtype=np.float64))
-    edges = _steady_edges(beats, downbeats, duration_s)
+    section_starts = np.asarray(section_starts, dtype=np.float64)
+    edges = _steady_edges(beats, downbeats, duration_s, djay_bpm, section_starts)
     if edges is not None:
         return edges
-    # No steady tempo: four tracked beats per bar, starting where most downbeats fall.
+    # No steady tempo: bars of tracked beats, starting where most downbeats fall.
     # The tracker sometimes calls a downbeat every two beats, so its downbeats alone won't do.
+    per_bar = _beats_per_bar(60.0 / float(np.median(np.diff(beats))), djay_bpm)
     index = np.searchsorted(beats, downbeats - DOWNBEAT_SLACK_S)
-    phase = int(np.bincount(index[index < len(beats)] % 4, minlength=4).argmax())
-    starts = beats[phase::4]
+    sections = np.searchsorted(beats, section_starts - DOWNBEAT_SLACK_S)
+    phase = _bar_phase(index[index < len(beats)], sections[sections < len(beats)], per_bar)
+    starts = beats[phase::per_bar]
     # The last bar has no beat after it to close it: close it if the audio goes on that long.
     end = starts[-1] + float(np.median(np.diff(starts)))
     return np.append(starts, end) if end <= duration_s + DOWNBEAT_SLACK_S else starts
@@ -193,6 +241,7 @@ def analyze_stems(
     sr: int,
     beat: BeatAnalysis,
     fit: GridFit | None,
+    djay_bpm: float | None = None,
 ) -> tuple[BarFeatures, StructureAnalysis]:
     """Separate the track once; return its bars and its Raveform sections."""
     separator, model = _allin1._prepare(_raveform.resolve_raveform_weights(), _raveform.MODEL_NAME)
@@ -207,7 +256,9 @@ def analyze_stems(
     finally:
         _allin1._clear_mlx_cache()
     powers["mix"] = frame_power(y)
-    edges = bar_edges(beat.beats, beat.downbeats, fit, beat.duration_s)
+    edges = bar_edges(
+        beat.beats, beat.downbeats, fit, beat.duration_s, djay_bpm, [s.start for s in segments]
+    )
     if len(edges) < 2:
         edges = np.array([0.0, beat.duration_s])
     feats = bar_features(powers, mel_db(y, sr), edges, sr)

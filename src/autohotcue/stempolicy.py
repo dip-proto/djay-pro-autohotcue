@@ -413,6 +413,8 @@ def propose_cues_stems(feats: BarFeatures, segments: list[Segment]) -> CuePropos
             return False
         moments.remove(best)
         place(pad, best.bar, best.kind)
+        if best.kind == "Loop":
+            p.loop_ends[pad] = float(feats.starts[best.bar + LOOP_BARS])
         placed.setdefault(best.kind, []).append(best.bar)
         return True
 

@@ -543,6 +543,13 @@ def test_bridge_is_the_beat_without_its_bassline():
     assert pads["D"][1] == 96
 
 
+def test_loop_pads_end_8_bars_after_they_start():
+    prop = propose_cues_stems(*_track(*CLASSIC))
+    loops = [pad for pad in prop.positions if prop.labels[pad] == "Loop"]
+    assert loops
+    assert prop.loop_ends == {pad: prop.positions[pad] + 8 * BAR_S for pad in loops}
+
+
 def test_short_track_only_gets_a_and_b():
     prop = propose_cues_stems(*_track(S("intro", 8, bass=0.0), S("drop", 12)))
     assert _pads(prop) == {"A": ("8 Bars to Drop", 0), "B": ("Drop", 8)}

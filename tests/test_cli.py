@@ -1,6 +1,7 @@
 """Tests for CLI path expansion (directory batch mode)."""
 from __future__ import annotations
 
+import argparse
 import sqlite3
 
 import pytest
@@ -264,6 +265,64 @@ def test_write_names_each_cue_after_what_the_engine_found(tmp_path, monkeypatch)
     assert [(c.get("comment"), c.get("time").value) for c in cues] == [
         ("Drop", 30.0), ("Loop", 90.0), ("Drop 2", 60.0),
     ]
+
+
+def test_write_makes_a_loop_of_a_cue_that_has_an_end(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_djay_running", lambda: False)
+    track = tmp_path / "track.opus"
+    track.write_bytes(b"")
+    library = _library_db_with_user_data(tmp_path, str(track), _fingerprint_user_doc(2))
+    db = djaydb.DjayDB(library)
+    try:
+        key, existing, _ = _precheck_one(db, str(track), _ApplyArgs())
+        prop = analysis.CueProposal(
+            positions={"B": 30.0, "E": 90.0},
+            labels={"B": "Drop", "E": "Loop"},
+            loop_ends={"E": 106.0},
+        )
+        track_analysis = analysis.TrackAnalysis(
+            bpm=120.0, first_beat_s=0.0, duration_s=200.0, engine="ml-stems"
+        )
+        cli._write_one(
+            db, key, existing, track_analysis, prop, lambda: None, grid_lock=False, force=True
+        )
+        cues = db.get("mediaItemUserData", key).root.get("cuePoints").items
+    finally:
+        db.close()
+    assert [(c.get("comment"), c.get("endTime").value) for c in cues] == [
+        ("Drop", -1.0), ("Loop", 106.0),
+    ]
+
+    cli.cmd_verify(argparse.Namespace(path=str(track), library=library))
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].split() == ["B", "Drop", "30.000s"]
+    assert lines[1].split() == ["E", "Loop", "90.000s", "loops", "for", "16.000s"]
+
+
+def test_write_snaps_the_end_of_a_loop_to_the_grid_like_its_start(tmp_path, monkeypatch):
+    from autohotcue.gridlock import GridFit
+
+    monkeypatch.setattr(cli, "_djay_running", lambda: False)
+    track = tmp_path / "track.opus"
+    track.write_bytes(b"")
+    db = djaydb.DjayDB(_library_db_with_user_data(tmp_path, str(track), _fingerprint_user_doc(2)))
+    try:
+        key, existing, _ = _precheck_one(db, str(track), _ApplyArgs())
+        prop = analysis.CueProposal(
+            positions={"E": 90.04}, labels={"E": "Loop"}, loop_ends={"E": 105.97},
+        )
+        fit = GridFit(bpm=120.0, render_bpm=120.0, anchor_s=0.0, beat_fit=0.0,
+                      bar_resid_std=0.0, splice_jump=0.0, ok=True, reason="")
+        track_analysis = analysis.TrackAnalysis(
+            bpm=120.0, first_beat_s=0.0, duration_s=200.0, engine="ml-stems", grid_fit=fit,
+        )
+        cli._write_one(
+            db, key, existing, track_analysis, prop, lambda: None, grid_lock=True, force=True
+        )
+        (cue,) = db.get("mediaItemUserData", key).root.get("cuePoints").items
+    finally:
+        db.close()
+    assert (cue.get("time").value, cue.get("endTime").value) == (90.0, 106.0)
 
 
 def test_precheck_allows_known_safe_classnames(tmp_path):

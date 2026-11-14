@@ -233,6 +233,58 @@ def test_missing_beats_are_filled_in_evenly():
     assert _stems._even_beats(np.delete(beats, [10, 11, 12, 13, 30])) == pytest.approx(beats)
 
 
+def test_bars_are_four_djay_beats_when_djay_counts_half_as_many():
+    # Tracked at 160 BPM, 80 for djay: 8 bars have to be 32 of djay's beats.
+    beats = 0.1 + 0.375 * np.arange(320)
+    edges = _stems.bar_edges(beats, beats[::4], _fit(ok=False), 120.2, 80.2)
+    assert edges[:4] == pytest.approx(0.1 + 3.0 * np.arange(4), abs=0.02)
+    assert np.diff(edges) == pytest.approx(3.0, abs=1e-3)
+
+
+def test_sections_tell_which_downbeat_starts_a_bar_of_eight_beats():
+    # The tracker's downbeats fall on beats 0 and 4 of such a bar, as often on one as the other.
+    beats = 0.1 + 0.375 * np.arange(320)
+    sections = beats[[4, 68, 132]]
+    edges = _stems.bar_edges(beats, beats[::4], _fit(ok=False), 120.2, 80.2, sections)
+    assert edges[:3] == pytest.approx(beats[[4, 12, 20]], abs=0.02)
+    late = _stems.bar_edges(beats, beats[::4], _fit(ok=False), 120.2, 80.2, sections - 1.5)
+    assert late[:3] == pytest.approx(beats[[0, 8, 16]], abs=0.02)
+
+
+def test_sections_tell_which_downbeat_starts_a_bar_when_the_tempo_is_not_steady():
+    beats = _drifting_beats()
+    half_tempo = 30.0 / float(np.median(np.diff(beats)))
+    edges = _stems.bar_edges(beats, beats[::4], _fit(ok=False), float(beats[-1]), half_tempo,
+                             beats[[4, 36]])
+    assert edges[:3] == pytest.approx(beats[[4, 12, 20]])
+
+
+def test_sections_do_not_move_a_bar_of_four_beats():
+    beats = 0.1 + 0.5 * np.arange(240)
+    edges = _stems.bar_edges(beats, beats[::4], _fit(ok=False), 120.2, 120.0, beats[[2, 34, 66]])
+    assert edges[:3] == pytest.approx(beats[[0, 4, 8]], abs=0.02)
+
+
+def test_bars_are_four_djay_beats_when_djay_counts_twice_as_many():
+    beats = 0.1 + 0.75 * np.arange(160)
+    edges = _stems.bar_edges(beats, beats[::4], _fit(ok=False), 120.2, 160.0)
+    assert np.diff(edges) == pytest.approx(1.5, abs=1e-3)
+
+
+def test_bars_are_four_tracked_beats_when_djay_has_another_tempo():
+    beats = 0.1 + 0.5 * np.arange(240)
+    for djay_bpm in (None, 120.0, 100.0, 170.6, 216.0, 66.0):
+        edges = _stems.bar_edges(beats, beats[::4], _fit(ok=False), 120.2, djay_bpm)
+        assert np.diff(edges) == pytest.approx(2.0, abs=1e-3)
+
+
+def test_bars_follow_djay_when_the_tempo_is_not_steady_either():
+    beats = _drifting_beats()
+    half_tempo = 30.0 / float(np.median(np.diff(beats)))
+    edges = _stems.bar_edges(beats, beats[::4], _fit(ok=False), float(beats[-1]), half_tempo)
+    assert edges[:-1] == pytest.approx(beats[::8])
+
+
 def test_bar_edges_without_beats():
     assert len(_stems.bar_edges(np.zeros(3), np.zeros(1), None, 30.0)) == 0
 
@@ -303,6 +355,30 @@ def test_analyze_stems_measures_each_stem_per_bar(monkeypatch):
     assert calls == ["cleared"]
 
 
+def test_analyze_stems_counts_bars_in_djay_beats(monkeypatch):
+    silence = np.zeros(48 * SR, dtype=np.float32)
+    stems = {name: np.stack([silence, silence]) for name in _stems.STEMS}
+    _fake_models(monkeypatch, stems, [])
+    # Tracked at 160 BPM on a grid that was refused, 80 for djay.
+    beats = 0.375 * np.arange(128)
+    beat = BeatAnalysis(bpm=160.0, beats=beats, downbeats=beats[::4], duration_s=48.0,
+                        source="test")
+    feats, _ = _stems.analyze_stems("/x.m4a", silence, SR, beat, _fit(ok=False), 80.0)
+    assert np.diff(feats.starts) == pytest.approx(3.0, abs=1e-3)
+
+
+
+def test_analyze_stems_starts_bars_where_sections_start(monkeypatch):
+    silence = np.zeros(48 * SR, dtype=np.float32)
+    stems = {name: np.stack([silence, silence]) for name in _stems.STEMS}
+    _fake_models(monkeypatch, stems, [Segment(1.5, 25.5, "intro"), Segment(25.5, 48.0, "drop")])
+    beats = 0.375 * np.arange(128)
+    beat = BeatAnalysis(bpm=160.0, beats=beats, downbeats=beats[::4], duration_s=48.0,
+                        source="test")
+    feats, _ = _stems.analyze_stems("/x.m4a", silence, SR, beat, _fit(ok=False), 80.0)
+    assert feats.starts[:3] == pytest.approx([1.5, 4.5, 7.5], abs=0.02)
+
+
 def test_analyze_stems_refuses_a_sample_rate_mismatch(monkeypatch):
     _fake_models(monkeypatch, {}, [], samplerate=48000)
     beat = BeatAnalysis(bpm=120.0, beats=np.zeros(0), downbeats=np.zeros(0), duration_s=8.0,
@@ -332,7 +408,10 @@ def test_cues_from_beats_keeps_the_layout_of_the_policy(monkeypatch):
         [Segment(0.0, 32.0, "intro"), Segment(32.0, 96.0, "drop"), Segment(96.0, 128.0, "outro")],
         source="raveform",
     )
-    monkeypatch.setattr(_stems, "analyze_stems", lambda *args: (feats, structure))
+    seen = []
+    monkeypatch.setattr(
+        _stems, "analyze_stems", lambda *args: seen.append(args) or (feats, structure)
+    )
     beat = BeatAnalysis(bpm=100.0, beats=np.arange(0, 128, 0.5), downbeats=np.arange(0, 128, 2.0),
                         duration_s=128.0, source="test")
 
@@ -349,6 +428,8 @@ def test_cues_from_beats_keeps_the_layout_of_the_policy(monkeypatch):
         "8 Bars to Drop", "Drop", "8 Bars to Break", "Breakdown",
     ]
     assert "djay says 120.0, tracked 100.0" in prop.notes
+    # Bars are counted in djay's beats, so the engine needs djay's tempo.
+    assert seen[0][-1] == 120.0
 
 
 def test_other_engines_keep_the_djcues_names():

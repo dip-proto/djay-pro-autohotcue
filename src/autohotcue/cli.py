@@ -136,7 +136,9 @@ def _print_proposal(track: analysis.TrackAnalysis, prop: analysis.CueProposal) -
         t = prop.positions.get(pad)
         if t is not None:
             m, s = divmod(t, 60)
-            print(f"  {pad} {prop.label(pad):16s} {int(m)}:{s:05.2f} ({t:.3f}s)")
+            end = prop.loop_ends.get(pad)
+            loop = f", loops for {end - t:.3f}s" if end is not None else ""
+            print(f"  {pad} {prop.label(pad):16s} {int(m)}:{s:05.2f} ({t:.3f}s{loop})")
     for note in prop.notes:
         print("  -", note)
     _print_grid_fit(track)
@@ -313,12 +315,14 @@ def _write_one(
     from autohotcue.gridlock import snap_cues
 
     positions = dict(prop.positions)
+    loop_ends = dict(prop.loop_ends)
     write_grid = False
     fit = track.grid_fit
     if grid_lock and fit is not None:
         if fit.ok:
             if not _has_beat_grid_edits(existing) or force:
                 positions = snap_cues(positions, fit)
+                loop_ends = snap_cues(loop_ends, fit)
                 write_grid = True
         else:
             print(f"  grid: SKIP — {fit.reason}")
@@ -327,7 +331,9 @@ def _write_one(
     for i, pad in enumerate("ABCDEFGH"):
         t = positions.get(pad)
         if t is not None:
-            cues.append({"time": t, "number": i, "comment": prop.label(pad)})
+            cues.append({
+                "time": t, "number": i, "comment": prop.label(pad), "end": loop_ends.get(pad),
+            })
     if not cues:
         raise _Skip("analysis produced no cues")
 
@@ -571,7 +577,9 @@ def cmd_verify(args):
         for cp in doc.root.get("cuePoints").items:
             pad = djaydb.cue_pad(cp.get("number"))
             name = chr(65 + pad) if pad >= 0 else "-"
-            print(f"  {name} {cp.get('comment') or '':16s} {cp.get('time').value:.3f}s")
+            start, end = cp.get("time").value, cp.get("endTime")
+            loop = f"  loops for {end.value - start:.3f}s" if end and end.value > start else ""
+            print(f"  {name} {cp.get('comment') or '':16s} {start:.3f}s{loop}")
         bge = doc.root.get("beatGridEdits")
         if isinstance(bge, tsaf.Obj):
             pos = bge.get("firstDownbeatPosition")

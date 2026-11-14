@@ -51,6 +51,7 @@ class CueProposal:
     positions: dict[str, float] = field(default_factory=dict)  # pad letter -> seconds
     notes: list[str] = field(default_factory=list)
     labels: dict[str, str] = field(default_factory=dict)  # pad letter -> name, if not djcues
+    loop_ends: dict[str, float] = field(default_factory=dict)  # pad letter -> end of its loop
 
     def label(self, pad: str) -> str:
         return self.labels.get(pad, DJCUES_LABELS[pad])
@@ -458,7 +459,7 @@ def cues_from_beats(
         from autohotcue.backends import bpm_octave_ratio
         from autohotcue.stempolicy import propose_cues_stems
 
-        bars, structure = analyze_stems(path, y, SR, beat, grid_fit)
+        bars, structure = analyze_stems(path, y, SR, beat, grid_fit, known_bpm)
         prop = propose_cues_stems(bars, structure.segments)
         segments = list(structure.segments)
         if known_bpm is not None and bpm_octave_ratio(beat.bpm, known_bpm) > 0.02:

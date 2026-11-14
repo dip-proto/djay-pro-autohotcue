@@ -42,6 +42,7 @@ def dump(path: str, dest: Path, db: djaydb.DjayDB, separator, model) -> None:
         beats=beat.beats,
         downbeats=beat.downbeats,
         fit=np.array([fit.bpm, fit.render_bpm, fit.anchor_s, float(fit.ok)]),
+        djay_bpm=bpm or 0.0,
         mel=_stems.mel_db(y, analysis.SR).astype(np.float16),
         seg_start=np.array([s.start for s in segments]),
         seg_end=np.array([s.end for s in segments]),

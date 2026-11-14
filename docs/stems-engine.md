@@ -24,6 +24,9 @@ and its drop lands on the breakdown of the track going out.
 
 Each cue is written with its name, so djay shows what a pad holds.
 
+A Loop cue is written with its end, 8 bars after its start, so djay plays it as a
+32-beat loop when the pad is pressed.
+
 B is the cue that matters most, so every track gets one.
 When a track has no drop, B is where its fullest passage starts, and it is named Peak
 (with A named 8 Bars to Peak).
@@ -45,6 +48,10 @@ and when 85% of them sit on one straight lattice, bars are counted on that latti
 starting on the beat where most tracked downbeats fall.
 Only tracks whose tempo really moves (a live drummer, a spliced edit) get bars of four
 tracked beats, and everything else works the same.
+
+A bar is four of djay's beats, whatever the tracker counts.
+On some tracks djay counts half as many beats as the tracker (80 BPM against 160):
+a bar is then eight tracked beats, so that 8 bars are 32 beats on djay's screen.
 
 A file often opens right on a downbeat, which the grid then puts a few milliseconds
 before the audio.
@@ -178,7 +185,8 @@ The tracks without D are mostly songs and loops that never thin out.
 On the 451 tracks measured first, D was the outro more than four times out of ten:
 half of the breakdowns in this kind of music have someone singing over them.
 
-A second drop is found on three tracks out of four, a loop on almost half of them,
+A second drop is found on three tracks out of four, a loop on almost half of them
+(677 loops in all, each 32 of djay's beats long),
 a vocals-only passage on four in ten and a bridge on one in twenty.
 With the spare pads filled, E holds something on 73% of the tracks, F on 61%, G on 31%
 and H on 75%.
@@ -193,9 +201,9 @@ cues against hand-placed ones.
 The vocal stem also catches vocal chops and some lead synths.
 A breakdown with a chopped vocal sample in it counts as having vocals.
 
-When the tempo is not steady, bars are four tracked beats, and the tracker is not always right.
-On 5 tracks out of the 1028 that have all four pads, A to B and C to D are not the same length:
-one beat apart on four of them, more than a bar on the fifth.
+When the tempo is not steady, bars are counted on tracked beats, and the tracker is not always right.
+On 7 tracks out of the 1022 that have all four pads, A to B and C to D are not the same length,
+and on 9 tracks an 8-bar span is a beat or more away from 32 of djay's beats.
 
 Tracks under 24 bars only get A and B, and tracks under 8 bars get no cues.
 A file where the tracker finds no beat has no bars to count, so it gets none either.

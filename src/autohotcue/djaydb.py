@@ -76,15 +76,18 @@ def build_beat_grid_edits(anchor_s: float) -> tsaf.Obj:
 def build_cue_objects(cues: list[dict]) -> list[tsaf.Obj]:
     """Build ``ADCCuePoint`` objects (sorted by slot) from cue dicts.
 
-    Each dict: {time: float, number: int, comment: str|None}. endTime is -1
-    (non-loop). colorIndex is omitted — djay assigns a default per slot, and
+    Each dict: {time: float, number: int, comment: str|None, end: float|None}.
+    A cue with an ``end`` plays as a loop from ``time`` to ``end``,
+    which is how djay stores a loop enabled on a pad. Without one, endTime is -1.
+    colorIndex is omitted — djay assigns a default per slot, and
     minimal real records (time/endTime/number only) are valid.
     """
     objs = []
     for c in sorted(cues, key=lambda c: c["number"]):
         cue = tsaf.Obj("ADCCuePoint")
         cue.fields.append(("time", tsaf.F32.of(c["time"])))
-        cue.fields.append(("endTime", tsaf.F32.of(-1.0)))
+        end = c.get("end")
+        cue.fields.append(("endTime", tsaf.F32.of(-1.0 if end is None else end)))
         if c.get("comment"):
             cue.fields.append(("comment", c["comment"]))
         cue.fields.append(("number", cue_number_value(c["number"])))

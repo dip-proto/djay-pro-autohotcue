@@ -147,6 +147,17 @@ def test_int16_roundtrip_both_parities():
         assert got.tag == tsaf.TAG_INT16 and got.value == 2026
 
 
+def test_cue_with_an_end_is_a_loop():
+    # What djay stores once a 32-beat loop is enabled on a pad at 128 BPM.
+    loop, plain = djaydb.build_cue_objects([
+        {"time": 180.5, "number": 4, "comment": "Loop", "end": 195.5},
+        {"time": 200.0, "number": 5, "comment": "Vocals", "end": None},
+    ])
+    assert loop.get("endTime").value == 195.5
+    assert plain.get("endTime").value == -1.0
+    assert [name for name, _ in loop.fields] == ["time", "endTime", "comment", "number"]
+
+
 def test_pads_are_numbered_from_1():
     # What djay itself stores for cues set on pads A to H: 1 has a tag of its own.
     assert djaydb.cue_number_value(0) == tsaf.Marker(tsaf.TAG_M2D)
